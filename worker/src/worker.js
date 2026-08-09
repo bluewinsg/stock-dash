@@ -23,8 +23,11 @@ const ALLOWED_ORIGINS = [
   "http://127.0.0.1:8765"
 ];
 
-// seconds
-const TTL = { news: 120, earnings: 3600, quote: 30, status: 60 };
+// seconds. Finnhub's free tier is 60 calls/min, and the edge cache is
+// per-colo, so a few viewers in different regions multiply the upstream
+// call rate. These are deliberately generous — none of this data is
+// tick-by-tick, and the Binance side of the dashboard is what needs to be live.
+const TTL = { news: 300, earnings: 21600, quote: 60, status: 300 };
 
 function corsHeaders(origin) {
   const allow = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
@@ -68,11 +71,25 @@ function ymd(d) {
   return d.toISOString().slice(0, 10);
 }
 
+class RateLimited extends Error {}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 async function fetchFinnhub(path, env) {
   const url = `${FINNHUB}/${path}${path.includes("?") ? "&" : "?"}token=${env.FINNHUB_KEY}`;
-  const r = await fetch(url, { cf: { cacheTtl: 30, cacheEverything: true } });
-  if (!r.ok) throw new Error(`finnhub ${r.status}`);
-  return r.json();
+
+  // 429s on the free tier are common and usually transient — a short backoff
+  // clears them far more often than it fails. Two tries, then give up and let
+  // the caller decide how to degrade.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await fetch(url, { cf: { cacheTtl: 60, cacheEverything: true } });
+    if (r.ok) return r.json();
+    if (r.status === 429) {
+      if (attempt < 2) { await sleep(400 * (attempt + 1)); continue; }
+      throw new RateLimited("finnhub rate limit");
+    }
+    throw new Error(`finnhub ${r.status}`);
+  }
 }
 
 export default {
@@ -145,6 +162,16 @@ export default {
       return res;
 
     } catch (e) {
+      // Rate limiting is an expected state on the free tier, not a fault.
+      // Report it distinctly so the dashboard can say "retrying" rather than
+      // showing the user a broken panel.
+      if (e instanceof RateLimited) {
+        return new Response(
+          JSON.stringify({ error: "rate limited", retry: true }),
+          { status: 429,
+            headers: { "Content-Type": "application/json",
+                       "Retry-After": "30", ...corsHeaders(origin) } });
+      }
       return err(502, String(e.message || e), origin);
     }
   }
