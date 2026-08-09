@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>US Stock Perps — Day Trading Dashboard</title>
+<style>
+:root{
+  --bg:#0b0e14; --panel:#121722; --panel2:#0f141d; --line:#1e2635;
+  --fg:#d7e0ee; --dim:#7c8aa3; --dim2:#4d5a72;
+  --grn:#26d07c; --red:#ff4d5e; --amb:#ffb020; --blu:#4d9fff; --pur:#a78bfa;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.45 var(--mono);-webkit-font-smoothing:antialiased}
+a{color:var(--blu)}
+h1,h2,h3{margin:0;font-weight:600}
+.wrap{max-width:1680px;margin:0 auto;padding:12px}
+
+/* ---------- header ---------- */
+header{display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between;
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:12px}
+.brand{font-size:15px;font-weight:700;letter-spacing:.5px}
+.brand span{color:var(--dim);font-weight:400;font-size:11px}
+.clocks{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+.clk{text-align:right}
+.clk b{display:block;font-size:16px;letter-spacing:1px}
+.clk i{font-style:normal;color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:1px}
+.badge{padding:3px 9px;border-radius:4px;font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap}
+.b-rth{background:rgba(38,208,124,.15);color:var(--grn);border:1px solid rgba(38,208,124,.35)}
+.b-pre{background:rgba(77,159,255,.15);color:var(--blu);border:1px solid rgba(77,159,255,.35)}
+.b-post{background:rgba(167,139,250,.15);color:var(--pur);border:1px solid rgba(167,139,250,.35)}
+.b-closed{background:rgba(124,138,163,.12);color:var(--dim);border:1px solid rgba(124,138,163,.3)}
+.b-frozen{background:rgba(255,176,32,.15);color:var(--amb);border:1px solid rgba(255,176,32,.4)}
+
+/* ---------- layout ---------- */
+.grid{display:grid;gap:12px;grid-template-columns:repeat(12,1fr)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;min-width:0}
+.c4{grid-column:span 4}.c5{grid-column:span 5}.c6{grid-column:span 6}
+.c7{grid-column:span 7}.c8{grid-column:span 8}.c12{grid-column:span 12}
+@media(max-width:1200px){.c4,.c5,.c6,.c7,.c8{grid-column:span 12}}
+.card>h2{font-size:12px;text-transform:uppercase;letter-spacing:1.2px;color:var(--dim);
+  margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.card>h2 em{font-style:normal;font-size:10px;color:var(--dim);text-transform:none;letter-spacing:0}
+
+/* ---------- tables ---------- */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:right;color:var(--dim);font-weight:500;font-size:10px;text-transform:uppercase;
+  letter-spacing:.7px;padding:4px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+td{padding:5px 6px;border-bottom:1px solid rgba(30,38,53,.5);text-align:right;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:rgba(77,159,255,.05)}
+tbody tr.sel{background:rgba(77,159,255,.1)}
+.sym{font-weight:700;cursor:pointer}
+.sym:hover{color:var(--blu)}
+.up{color:var(--grn)}.dn{color:var(--red)}.warn{color:var(--amb)}.dim{color:var(--dim)}
+.tag{font-size:9px;padding:1px 5px;border-radius:3px;letter-spacing:.5px;font-weight:700}
+.t-ok{background:rgba(38,208,124,.15);color:var(--grn)}
+.t-cau{background:rgba(255,176,32,.15);color:var(--amb)}
+.t-avoid{background:rgba(255,77,94,.15);color:var(--red)}
+
+/* ---------- inputs ---------- */
+label{display:block;font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.7px;margin-bottom:3px}
+input,select{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--fg);
+  border-radius:5px;padding:6px 8px;font:12px var(--mono);outline:none}
+input:focus,select:focus{border-color:var(--blu)}
+.row{display:grid;gap:8px;margin-bottom:9px}
+.r2{grid-template-columns:1fr 1fr}.r3{grid-template-columns:1fr 1fr 1fr}.r4{grid-template-columns:repeat(4,1fr)}
+.seg{display:flex;gap:0;border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.seg button{flex:1;background:var(--panel2);border:0;color:var(--dim);padding:6px;font:11px var(--mono);
+  cursor:pointer;letter-spacing:.5px}
+.seg button.on{background:var(--blu);color:#04101f;font-weight:700}
+.seg button.on.short{background:var(--red);color:#fff}
+
+/* ---------- stats ---------- */
+.stats{display:grid;gap:8px;grid-template-columns:1fr 1fr}
+.stat{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+.stat i{font-style:normal;display:block;font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.8px}
+.stat b{display:block;font-size:17px;font-weight:700;margin-top:3px;letter-spacing:-.3px}
+.stat s{text-decoration:none;display:block;font-size:10px;color:var(--dim);margin-top:1px}
+.stat.alert{border-color:rgba(255,77,94,.5);background:rgba(255,77,94,.07)}
+.stat.good{border-color:rgba(38,208,124,.4);background:rgba(38,208,124,.06)}
+.stat.caution{border-color:rgba(255,176,32,.45);background:rgba(255,176,32,.07)}
+
+.note{font-size:11px;color:var(--dim);line-height:1.5;margin-top:9px;padding-top:9px;border-top:1px solid var(--line)}
+.alertbox{background:rgba(255,77,94,.09);border:1px solid rgba(255,77,94,.4);border-radius:6px;
+  padding:9px 11px;font-size:11.5px;line-height:1.5;margin-top:9px;color:#ffc4ca}
+.alertbox b{color:var(--red)}
+.okbox{background:rgba(38,208,124,.07);border:1px solid rgba(38,208,124,.3);border-radius:6px;
+  padding:9px 11px;font-size:11.5px;line-height:1.5;margin-top:9px;color:#a8e9c8}
+
+/* ---------- bars / meters ---------- */
+.meter{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:5px;border:1px solid var(--line)}
+.meter div{height:100%;transition:width .3s}
+canvas{display:block;width:100%;height:44px}
+.foot{color:var(--dim);font-size:10.5px;text-align:center;padding:14px 0 4px}
+.err{color:var(--red);font-size:11px}
+.spin{color:var(--dim);font-size:11px;padding:14px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div>
+    <div class="brand">US STOCK PERPS <span>· binance tradfi · day-trade console</span></div>
+    <div style="font-size:10.5px;color:var(--dim);margin-top:2px" id="uniInfo">loading universe…</div>
+  </div>
+  <div class="clocks">
+    <div class="clk"><i>Singapore</i><b id="clkSGT">--:--:--</b></div>
+    <div class="clk"><i>New York</i><b id="clkET">--:--:--</b></div>
+    <div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end">
+      <span class="badge b-closed" id="sessBadge">…</span>
+      <span class="badge b-frozen" id="freezeBadge" style="display:none">index frozen</span>
+    </div>
+    <div class="clk"><i id="nextLbl">next</i><b id="nextCd">--:--:--</b></div>
+  </div>
+</header>
+
+<div class="grid">
+
+  <!-- ============ RISK / POSITION ============ -->
+  <div class="card c4">
+    <h2>Position &amp; Liquidation <em id="calcSym">SPCXUSDT</em></h2>
+
+    <div class="row r2">
+      <div><label>Account (USDT)</label><input id="iAcct" type="number" value="1500" step="100"></div>
+      <div><label>Margin / trade</label><input id="iMargin" type="number" value="1500" step="50"></div>
+    </div>
+    <div class="row r3">
+      <div><label>Leverage</label><input id="iLev" type="number" value="20" step="1" min="1" max="25"></div>
+      <div><label>MMR %</label><input id="iMmr" type="number" value="1.0" step="0.1"></div>
+      <div><label>Max open</label><input id="iMax" type="number" value="4" step="1" min="1"></div>
+    </div>
+    <div class="row r2">
+      <div><label>Side</label>
+        <div class="seg"><button id="bLong" class="on">LONG</button><button id="bShort">SHORT</button></div>
+      </div>
+      <div><label>Margin mode</label>
+        <div class="seg"><button id="bIso" class="on">ISOLATED</button><button id="bCross">CROSS</button></div>
+      </div>
+    </div>
+
+    <div class="stats" style="margin-top:11px">
+      <div class="stat"><i>Notional</i><b id="oNotional">—</b><s id="oQty">—</s></div>
+      <div class="stat"><i>Liq. price</i><b id="oLiq">—</b><s id="oLiqDist">—</s></div>
+      <div class="stat" id="sAtrD"><i>Liq dist ÷ daily ATR</i><b id="oAtrD">—</b><s id="oAtrDs">—</s></div>
+      <div class="stat" id="sAtrI"><i>Liq dist ÷ 5m ATR</i><b id="oAtrI">—</b><s id="oAtrIs">—</s></div>
+    </div>
+
+    <div id="heatBox"></div>
+    <div class="note" id="calcNote">Liquidation is isolated-margin math using the MMR you enter.
+      Pull the real risk-limit tiers from the Binance app (leverage slider → Risk Limit) and set MMR per symbol for exact numbers.</div>
+  </div>
+
+  <!-- ============ BASIS ============ -->
+  <div class="card c8">
+    <h2>Basis monitor — perp vs underlying index <em id="basisAge">—</em></h2>
+    <div id="basisWrap"><div class="spin">loading…</div></div>
+    <div class="note">Basis = (mark − index) ÷ index. Z-score is against the last ~500h of that symbol's own premium
+      history, so it says "wide for <i>this</i> contract", not wide in the abstract. When the cash market is shut the
+      index is frozen at the last print — basis then measures how far the perp has run ahead of a stale reference,
+      which is what resolves into the 09:30 ET open.</div>
+  </div>
+
+  <!-- ============ DEPTH / SLIPPAGE ============ -->
+  <div class="card c5">
+    <h2>Depth &amp; slippage <em id="depthSym">—</em></h2>
+    <div class="stats">
+      <div class="stat"><i>Spread</i><b id="dSpread">—</b><s id="dSpreadUsd">—</s></div>
+      <div class="stat"><i>Book depth (10 lvl)</i><b id="dDepth">—</b><s>same side as your exit</s></div>
+      <div class="stat" id="sSlip"><i>Est. entry slippage</i><b id="dSlip">—</b><s id="dSlipUsd">—</s></div>
+      <div class="stat" id="sConsume"><i>Book consumed</i><b id="dConsume">—</b><s>by your notional</s></div>
+    </div>
+    <div id="depthAlert"></div>
+    <div class="note">Walks the live order book for your actual notional. Entry is the cheap half — the number that
+      matters is what the <i>opposite</i> side looks like when you need out in a hurry, which is the depth figure above.</div>
+  </div>
+
+  <!-- ============ VOLATILITY ============ -->
+  <div class="card c7">
+    <h2>Volatility &amp; survivability <em>can 20x survive a normal day?</em></h2>
+    <div id="volWrap"><div class="spin">loading…</div></div>
+    <div class="note">"Liq-range days" counts sessions in the last 90 whose intraday range alone exceeded your
+      liquidation distance. It is not a prediction — it's how often ordinary noise on this symbol has been
+      large enough to reach your liquidation price from a badly-timed entry.</div>
+  </div>
+
+  <!-- ============ GAP BOARD ============ -->
+  <div class="card c6">
+    <h2>Open-gap board <em>perp vs last cash print</em></h2>
+    <div id="gapWrap"><div class="spin">loading…</div></div>
+    <div class="note">While the cash market is closed the index holds Friday/yesterday's close. This ranks how far
+      each perp has drifted from that stale reference — i.e. what is already priced in before 09:30 ET.</div>
+  </div>
+
+  <!-- ============ FUNDING / OI ============ -->
+  <div class="card c6">
+    <h2>Funding &amp; open interest <em id="fundCd">—</em></h2>
+    <div id="fundWrap"><div class="spin">loading…</div></div>
+    <div class="note">TradFi perps settle funding every 8h, capped at ±1.00%, interest component 0%.
+      At 20x a 1% funding print is 20% of your margin — carry is not a rounding error at this leverage.</div>
+  </div>
+
+  <!-- ============ LIQUIDITY GATE ============ -->
+  <div class="card c12">
+    <h2>Liquidity gate — all US equity perps <em id="gateInfo">—</em></h2>
+    <div class="row r4" style="max-width:640px">
+      <div><label>Filter</label><select id="gateFilter">
+        <option value="all">all</option><option value="ok" selected>tradable only</option>
+        <option value="cau">caution</option><option value="avoid">avoid</option></select></div>
+      <div><label>Min 24h vol (USDT)</label><input id="gateVol" type="number" value="0" step="1000000"></div>
+      <div><label>Search</label><input id="gateSearch" type="text" placeholder="TSLA…"></div>
+      <div><label>Show</label><select id="gateN"><option>25</option><option selected>50</option><option>150</option></select></div>
+    </div>
+    <div id="gateWrap" style="margin-top:10px;max-height:460px;overflow:auto"><div class="spin">loading…</div></div>
+    <div class="note">Classification is against <i>your</i> notional, not a generic threshold: a symbol is
+      <span class="tag t-ok">TRADABLE</span> when 10 levels of book comfortably cover your position,
+      <span class="tag t-cau">CAUTION</span> when your size is a meaningful fraction of it, and
+      <span class="tag t-avoid">AVOID</span> when you are the book. Median volume across the whole equity-perp
+      list is under $1M/day — most of these names cannot absorb a leveraged position.</div>
+  </div>
+
+</div>
+
+<div class="foot">
+  Data: Binance public <code>fapi</code> (no key, no proxy). Read-only — no order entry by design.
+  <span id="lastTick"></span>
+</div>
+</div>
+
+<script>
+"use strict";
+/* =========================================================================
+   US Stock Perps — day-trading console
+   Single file, zero dependencies, all data from Binance public endpoints.
+   ========================================================================= */
+
+const API = "https://fapi.binance.com";
+const LS  = "usperp.cfg.v1";
+
+const state = {
+  universe: [],        // [{symbol, type, pricePrecision, tickSize}]
+  uniMap: {},
+  premium: {},         // symbol -> {mark,index,funding,nextFundingTime}
+  ticker:  {},         // symbol -> {vol, chg, last, trades}
+  book:    {},         // symbol -> {bid,ask,bidQty,askQty}
+  depth:   null,       // selected symbol full depth
+  atr:     {},         // symbol -> {dailyAtrPct, avgRangePct, ranges[], atr5mPct}
+  basisHist:{},        // symbol -> {mean, sd, n}
+  oi:      {},         // symbol -> {value, deltaPct}
+  sel:     "SPCXUSDT",
+  side:    "LONG",
+  mode:    "ISOLATED",
+  cfg: { acct:1500, margin:1500, lev:20, mmr:1.0, max:4, fee:0.05 },
+  watch: ["SPCXUSDT","TSLAUSDT","NVDAUSDT","QQQUSDT","SPYUSDT","MSTRUSDT","GOOGLUSDT","SOXLUSDT"]
+};
+
+/* ---------------------------------------------------------------- utils */
+const $ = id => document.getElementById(id);
+const fmt = (n,d=2) => (n===null||n===undefined||!isFinite(n)) ? "—" :
+  Number(n).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+const usd = n => !isFinite(n) ? "—" : n>=1e9 ? "$"+(n/1e9).toFixed(2)+"B"
+  : n>=1e6 ? "$"+(n/1e6).toFixed(1)+"M" : n>=1e3 ? "$"+(n/1e3).toFixed(1)+"K" : "$"+n.toFixed(0);
+const pct = (n,d=2) => !isFinite(n) ? "—" : (n>=0?"+":"")+n.toFixed(d)+"%";
+const cls = n => n>0 ? "up" : n<0 ? "dn" : "dim";
+
+async function get(path){
+  const r = await fetch(API+path, {cache:"no-store"});
+  if(!r.ok) throw new Error(path+" → "+r.status);
+  return r.json();
+}
+function safe(fn){ return fn().catch(e => { console.warn(e.message); return null; }); }
+
+/* --------------------------------------------------- session clock (ET) */
+const HOLIDAYS_2026 = ["2026-01-01","2026-01-19","2026-02-16","2026-04-03","2026-05-25",
+  "2026-06-19","2026-07-03","2026-09-07","2026-11-26","2026-12-25"];
+const HALFDAYS_2026 = ["2026-11-27","2026-12-24"];
+
+function etParts(d){
+  const f = new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",hour12:false,
+    year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",
+    second:"2-digit",weekday:"short"});
+  const p = {}; for(const x of f.formatToParts(d)) p[x.type]=x.value;
+  if(p.hour==="24") p.hour="00";
+  return { date:`${p.year}-${p.month}-${p.day}`, hh:+p.hour, mm:+p.minute, ss:+p.second,
+           dow:p.weekday, mins:(+p.hour)*60+(+p.minute),
+           time:`${p.hour}:${p.minute}:${p.second}` };
+}
+function sessionState(){
+  const e = etParts(new Date());
+  const weekend = (e.dow==="Sat"||e.dow==="Sun");
+  const holiday = HOLIDAYS_2026.includes(e.date);
+  const half    = HALFDAYS_2026.includes(e.date);
+  const close   = half ? 13*60 : 16*60;
+  let s;
+  if(weekend)        s = {k:"WEEKEND", live:false};
+  else if(holiday)   s = {k:"HOLIDAY", live:false};
+  else if(e.mins< 240)  s = {k:"CLOSED",     live:false};
+  else if(e.mins< 570)  s = {k:"PRE-MARKET", live:true};
+  else if(e.mins<close) s = {k:"REGULAR",    live:true};
+  else if(e.mins< 1200) s = {k:"AFTER-HRS",  live:true};
+  else               s = {k:"CLOSED",     live:false};
+
+  // next transition
+  let nextMin, nextLbl;
+  const marks = [[240,"pre-market"],[570,"NYSE open"],[close,"NYSE close"],[1200,"post close"]];
+  if(weekend||holiday){ nextMin=null; nextLbl="mkt shut"; }
+  else{
+    const nx = marks.find(m => e.mins < m[0]);
+    if(nx){ nextMin=nx[0]; nextLbl=nx[1]; } else { nextMin=240+1440; nextLbl="pre-market"; }
+  }
+  const cd = nextMin===null ? null : (nextMin*60) - (e.mins*60 + e.ss);
+  return {...s, et:e, nextLbl, cd, half};
+}
+function hms(sec){
+  if(sec===null||sec<0) return "--:--:--";
+  const h=Math.floor(sec/3600), m=Math.floor(sec%3600/60), s=Math.floor(sec%60);
+  return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
+}
+function tickClock(){
+  const now = new Date();
+  const sgt = new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Singapore",hour12:false,
+    hour:"2-digit",minute:"2-digit",second:"2-digit"}).format(now);
+  const S = sessionState();
+  $("clkSGT").textContent = sgt;
+  $("clkET").textContent  = S.et.time;
+  const b = $("sessBadge");
+  b.textContent = S.k + (S.half ? " ½day" : "");
+  b.className = "badge " + (S.k==="REGULAR"?"b-rth":S.k==="PRE-MARKET"?"b-pre":
+                            S.k==="AFTER-HRS"?"b-post":"b-closed");
+  $("freezeBadge").style.display = S.live ? "none" : "inline-block";
+  $("nextLbl").textContent = S.nextLbl;
+  $("nextCd").textContent  = hms(S.cd);
+  // funding countdown
+  const p = state.premium[state.sel];
+  if(p && p.nextFundingTime){
+    $("fundCd").textContent = "next funding in " + hms((p.nextFundingTime - Date.now())/1000);
+  }
+}
+
+/* ------------------------------------------------------------- config io */
+function loadCfg(){
+  try{ const c = JSON.parse(localStorage.getItem(LS)||"{}");
+    Object.assign(state.cfg, c.cfg||{});
+    if(c.sel) state.sel = c.sel;
+    if(c.side) state.side = c.side;
+    if(c.mode) state.mode = c.mode;
+    if(c.watch) state.watch = c.watch;
+  }catch(e){}
+  $("iAcct").value=state.cfg.acct; $("iMargin").value=state.cfg.margin;
+  $("iLev").value=state.cfg.lev;   $("iMmr").value=state.cfg.mmr; $("iMax").value=state.cfg.max;
+  setSeg();
+}
+function saveCfg(){
+  localStorage.setItem(LS, JSON.stringify({cfg:state.cfg, sel:state.sel,
+    side:state.side, mode:state.mode, watch:state.watch}));
+}
+function readInputs(){
+  state.cfg.acct   = +$("iAcct").value   || 0;
+  state.cfg.margin = +$("iMargin").value || 0;
+  state.cfg.lev    = +$("iLev").value    || 1;
+  state.cfg.mmr    = +$("iMmr").value    || 0.5;
+  state.cfg.max    = +$("iMax").value    || 1;
+  saveCfg(); renderCalc(); renderDepth(); renderVol(); renderGate();
+}
+function setSeg(){
+  $("bLong").classList.toggle("on", state.side==="LONG");
+  $("bShort").classList.toggle("on", state.side==="SHORT");
+  $("bShort").classList.toggle("short", state.side==="SHORT");
+  $("bIso").classList.toggle("on", state.mode==="ISOLATED");
+  $("bCross").classList.toggle("on", state.mode==="CROSS");
+}
+
+/* ------------------------------------------------------------- liq math */
+function liqPrice(entry, qty, margin, mmr, side, maintAmt=0){
+  // isolated single-position: equity = maint margin
+  if(side==="LONG")  return (entry*qty - margin - maintAmt) / (qty*(1-mmr));
+  else               return (entry*qty + margin + maintAmt) / (qty*(1+mmr));
+}
+function calc(){
+  const p = state.premium[state.sel];
+  if(!p) return null;
+  const entry  = p.mark;
+  const c      = state.cfg;
+  const margin = c.margin;
+  const notion = margin * c.lev;
+  const qty    = notion / entry;
+  const mmr    = c.mmr/100;
+  // cross uses whole-account equity as the buffer
+  const buffer = state.mode==="CROSS" ? Math.max(c.acct, margin) : margin;
+  const liq    = liqPrice(entry, qty, buffer, mmr, state.side);
+  const dist   = Math.abs(liq-entry)/entry*100;
+  const fee    = notion * (c.fee/100) * 2;
+  return {entry, notion, qty, liq, dist, margin, fee, buffer};
+}
+
+/* ------------------------------------------------------------ renderers */
+function renderCalc(){
+  const r = calc();
+  $("calcSym").textContent = state.sel;
+  if(!r){ $("oNotional").textContent="—"; return; }
+
+  $("oNotional").textContent = usd(r.notion);
+  $("oQty").textContent      = fmt(r.qty,3)+" contracts @ "+fmt(r.entry,2);
+  $("oLiq").textContent      = fmt(r.liq,2);
+  $("oLiqDist").textContent  = pct(state.side==="LONG"?-r.dist:r.dist)+" away · rt fee "+usd(r.fee);
+
+  const a = state.atr[state.sel];
+  if(a){
+    const nD = r.dist / a.dailyAtrPct;
+    const nI = a.atr5mPct ? r.dist / a.atr5mPct : NaN;
+    $("oAtrD").textContent  = fmt(nD,2)+"×";
+    $("oAtrDs").textContent = "daily ATR "+a.dailyAtrPct.toFixed(2)+"%";
+    $("oAtrI").textContent  = isFinite(nI) ? fmt(nI,0)+"×" : "—";
+    $("oAtrIs").textContent = a.atr5mPct ? "5m ATR "+a.atr5mPct.toFixed(3)+"%" : "—";
+    $("sAtrD").className = "stat " + (nD<1 ? "alert" : nD<2 ? "caution" : "good");
+    $("sAtrI").className = "stat " + (nI<10 ? "alert" : nI<30 ? "caution" : "good");
+  }
+
+  // ---- portfolio heat
+  const c = state.cfg;
+  const fit = Math.floor(c.acct / c.margin);
+  const need = c.margin * c.max;
+  const perTradeFor = c.acct / c.max;
+  let h = "";
+  if(need > c.acct){
+    h = `<div class="alertbox"><b>Concurrency conflict.</b> ${c.max} positions × ${usd(c.margin)} margin =
+      <b>${usd(need)}</b> against a ${usd(c.acct)} account. You can hold <b>${fit}</b> position${fit===1?"":"s"} at
+      this size, not ${c.max}. For ${c.max} concurrent, margin per trade must drop to
+      <b>${usd(perTradeFor)}</b>.</div>`;
+  } else {
+    const usedPct = need/c.acct*100;
+    h = `<div class="okbox">${c.max} × ${usd(c.margin)} = ${usd(need)} — <b>${usedPct.toFixed(0)}%</b>
+      of account committed as margin, ${usd(c.acct-need)} free.</div>`;
+  }
+  if(state.mode==="CROSS" && c.margin >= c.acct*0.6){
+    h += `<div class="alertbox"><b>Cross margin at ${(c.margin/c.acct*100).toFixed(0)}% of account.</b>
+      A liquidation draws on the entire balance, not just this position's margin. Isolated caps the
+      loss at ${usd(c.margin)}.</div>`;
+  }
+  $("heatBox").innerHTML = h;
+}
+
+function renderBasis(){
+  const rows = state.watch.map(s=>{
+    const p = state.premium[s], t = state.ticker[s];
+    if(!p) return "";
+    const basis = (p.mark - p.index)/p.index*100;
+    const hb = state.basisHist[s];
+    const z  = hb && hb.sd ? (basis/100 - hb.mean)/hb.sd : NaN;
+    const zc = !isFinite(z) ? "dim" : Math.abs(z)>2 ? "warn" : cls(z);
+    return `<tr class="${s===state.sel?"sel":""}">
+      <td class="sym" data-s="${s}">${s.replace("USDT","")}</td>
+      <td>${fmt(p.mark, p.mark>100?2:3)}</td>
+      <td class="dim">${fmt(p.index, p.index>100?2:3)}</td>
+      <td class="${cls(basis)}">${pct(basis,3)}</td>
+      <td class="${zc}">${isFinite(z)?fmt(z,1)+"σ":"—"}</td>
+      <td class="${cls(p.funding)}">${p.funding===0?"0.0000%":pct(p.funding*100,4)}</td>
+      <td class="${t?cls(t.chg):""}">${t?pct(t.chg):"—"}</td>
+      <td class="dim">${t?usd(t.vol):"—"}</td></tr>`;
+  }).join("");
+  $("basisWrap").innerHTML = `<table><thead><tr>
+    <th>symbol</th><th>mark</th><th>index</th><th>basis</th><th>z</th>
+    <th>funding</th><th>24h</th><th>volume</th></tr></thead><tbody>${rows}</tbody></table>`;
+  bindSyms();
+  $("basisAge").textContent = new Date().toLocaleTimeString("en-GB",{hour12:false});
+}
+
+function renderGap(){
+  const S = sessionState();
+  const rows = state.watch.map(s=>{
+    const p = state.premium[s]; if(!p) return null;
+    return {s, gap:(p.mark-p.index)/p.index*100, mark:p.mark, index:p.index};
+  }).filter(Boolean).sort((a,b)=>Math.abs(b.gap)-Math.abs(a.gap));
+  const body = rows.map(r=>{
+    const w = Math.min(Math.abs(r.gap)/3*100, 100);
+    return `<tr><td class="sym" data-s="${r.s}">${r.s.replace("USDT","")}</td>
+      <td class="dim">${fmt(r.index,2)}</td><td>${fmt(r.mark,2)}</td>
+      <td class="${cls(r.gap)}">${pct(r.gap,2)}</td>
+      <td style="width:120px"><div class="meter"><div style="width:${w}%;background:${r.gap>0?"var(--grn)":"var(--red)"}"></div></div></td></tr>`;
+  }).join("");
+  $("gapWrap").innerHTML = `<div style="font-size:11px;color:${S.live?"var(--dim)":"var(--amb)"};margin-bottom:7px">
+      ${S.live ? "Cash market open — index is live, gaps are real-time basis."
+               : "Index frozen at last cash print. These are the moves the perp has made with no underlying to check it."}
+    </div><table><thead><tr><th>symbol</th><th>last cash</th><th>perp mark</th><th>gap</th><th></th>
+    </tr></thead><tbody>${body}</tbody></table>`;
+  bindSyms();
+}
+
+function renderFunding(){
+  const rows = state.watch.map(s=>{
+    const p = state.premium[s]; if(!p) return "";
+    const o = state.oi[s];
+    const c = state.cfg;
+    const costUsd = p.funding * c.margin * c.lev;          // per 8h on your notional
+    const costPct = c.margin ? costUsd/c.margin*100 : 0;    // as % of your margin
+    return `<tr><td class="sym" data-s="${s}">${s.replace("USDT","")}</td>
+      <td class="${cls(p.funding)}">${pct(p.funding*100,4)}</td>
+      <td class="${cls(-costUsd)}">${(costUsd>=0?"-":"+")+usd(Math.abs(costUsd))}</td>
+      <td class="${Math.abs(costPct)>2?"warn":"dim"}">${pct(-Math.abs(costPct),2).replace("+","-")}</td>
+      <td class="dim">${o?usd(o.value):"—"}</td>
+      <td class="${o?cls(o.deltaPct):""}">${o?pct(o.deltaPct,1):"—"}</td>
+      <td class="${o&&o.lsr>2?"warn":""}">${o&&o.lsr?fmt(o.lsr,2):"—"}</td></tr>`;
+  }).join("");
+  $("fundWrap").innerHTML = `<table><thead><tr><th>symbol</th><th>funding 8h</th>
+    <th>cost / 8h</th><th>vs margin</th><th>open int</th><th>OI Δ1h</th><th>L/S</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+  bindSyms();
+}
+
+function renderVol(){
+  const r = calc();
+  const rows = state.watch.map(s=>{
+    const a = state.atr[s]; if(!a) return "";
+    const dist = r && s===state.sel ? r.dist : (100/state.cfg.lev - state.cfg.mmr);
+    const hit  = a.ranges.filter(x=>x>dist).length;
+    const hitP = a.ranges.length ? hit/a.ranges.length*100 : 0;
+    const kls  = hitP>50?"dn":hitP>25?"warn":"up";
+    return `<tr class="${s===state.sel?"sel":""}">
+      <td class="sym" data-s="${s}">${s.replace("USDT","")}</td>
+      <td>${a.avgRangePct.toFixed(2)}%</td>
+      <td>${a.dailyAtrPct.toFixed(2)}%</td>
+      <td class="dim">${a.atr5mPct?a.atr5mPct.toFixed(3)+"%":"—"}</td>
+      <td class="warn">${dist.toFixed(2)}%</td>
+      <td class="${kls}">${hit}/${a.ranges.length}</td>
+      <td class="${kls}">${hitP.toFixed(0)}%</td></tr>`;
+  }).join("");
+  $("volWrap").innerHTML = `<table><thead><tr><th>symbol</th><th>avg range</th><th>ATR14</th>
+    <th>5m ATR</th><th>liq dist</th><th>liq-range days</th><th>%</th></tr></thead><tbody>${rows}</tbody></table>`;
+  bindSyms();
+}
+
+function renderDepth(){
+  const d = state.depth, r = calc();
+  $("depthSym").textContent = state.sel;
+  if(!d || !d.bids || !d.bids.length){ return; }
+  const bid = +d.bids[0][0], ask = +d.asks[0][0];
+  const spread = (ask-bid)/bid*100;
+  $("dSpread").textContent    = spread.toFixed(3)+"%";
+  $("dSpreadUsd").textContent = fmt(ask-bid,3)+" wide";
+
+  const side  = state.side==="LONG" ? d.bids : d.asks;   // exit side
+  const depth10 = side.slice(0,10).reduce((a,l)=>a + (+l[0])*(+l[1]), 0);
+  $("dDepth").textContent = usd(depth10);
+
+  if(r){
+    // walk the entry side
+    const entrySide = state.side==="LONG" ? d.asks : d.bids;
+    let need = r.qty, cost = 0, filled = 0;
+    for(const [p,q] of entrySide){
+      const take = Math.min(need, +q);
+      cost += take * (+p); filled += take; need -= take;
+      if(need<=0) break;
+    }
+    if(filled>0){
+      const avg = cost/filled;
+      const slip = Math.abs(avg - r.entry)/r.entry*100;
+      const done = need<=0;
+      $("dSlip").textContent    = done ? slip.toFixed(3)+"%" : ">"+slip.toFixed(2)+"%";
+      $("dSlipUsd").textContent = done ? usd(slip/100*r.notion)+" on entry"
+                                       : "book exhausted — order would not fill";
+      $("sSlip").className = "stat " + (!done||slip>0.5 ? "alert" : slip>0.15 ? "caution" : "good");
+    }
+    const consumed = r.notion/depth10*100;
+    $("dConsume").textContent = consumed>999 ? ">999%" : consumed.toFixed(0)+"%";
+    $("sConsume").className = "stat " + (consumed>100?"alert":consumed>40?"caution":"good");
+
+    let a = "";
+    if(consumed > 100){
+      a = `<div class="alertbox"><b>Your position is larger than the visible book.</b>
+        ${usd(r.notion)} notional against ${usd(depth10)} of ${state.side==="LONG"?"bid":"ask"} depth.
+        A market exit here moves the price against you before it fills — this is the mechanism
+        that turns a stop into a liquidation.</div>`;
+    } else if(consumed > 40){
+      a = `<div class="alertbox" style="background:rgba(255,176,32,.08);border-color:rgba(255,176,32,.4);color:#ffdca8">
+        Position is <b>${consumed.toFixed(0)}%</b> of 10-level depth. Exit in one clip will walk the book.
+        Scale out or size down.</div>`;
+    }
+    $("depthAlert").innerHTML = a;
+  }
+}
+
+function gateClass(volume, depthProxy, notional){
+  if(volume < notional*20)  return ["AVOID","t-avoid",0];
+  if(volume < notional*100) return ["CAUTION","t-cau",1];
+  return ["TRADABLE","t-ok",2];
+}
+function renderGate(){
+  const notional = state.cfg.margin * state.cfg.lev;
+  const f = $("gateFilter").value, minV = +$("gateVol").value||0;
+  const q = ($("gateSearch").value||"").toUpperCase();
+  const n = +$("gateN").value||50;
+
+  let rows = state.universe.map(u=>{
+    const t = state.ticker[u.symbol], b = state.book[u.symbol];
+    if(!t) return null;
+    const spread = b && b.bid ? (b.ask-b.bid)/b.bid*100 : NaN;
+    const [lab,kl,rank] = gateClass(t.vol, 0, notional);
+    return {sym:u.symbol, vol:t.vol, chg:t.chg, last:t.last, spread, lab, kl, rank, type:u.type};
+  }).filter(Boolean);
+
+  rows = rows.filter(r => r.vol>=minV && (!q || r.sym.includes(q)) &&
+    (f==="all" || (f==="ok"&&r.rank===2) || (f==="cau"&&r.rank===1) || (f==="avoid"&&r.rank===0)));
+  rows.sort((a,b)=>b.vol-a.vol);
+
+  const counts = {ok:0,cau:0,avoid:0};
+  state.universe.forEach(u=>{ const t=state.ticker[u.symbol]; if(!t)return;
+    const [,,rk]=gateClass(t.vol,0,notional);
+    counts[rk===2?"ok":rk===1?"cau":"avoid"]++; });
+  $("gateInfo").textContent = `${state.universe.length} symbols · ${counts.ok} tradable · `
+    + `${counts.cau} caution · ${counts.avoid} avoid — against ${usd(notional)} notional`;
+
+  const body = rows.slice(0,n).map(r=>`<tr class="${r.sym===state.sel?"sel":""}">
+    <td class="sym" data-s="${r.sym}">${r.sym.replace(/USDT|USD1/,"")}</td>
+    <td><span class="tag ${r.kl}">${r.lab}</span></td>
+    <td>${fmt(r.last, r.last>100?2:3)}</td>
+    <td class="${cls(r.chg)}">${pct(r.chg)}</td>
+    <td>${usd(r.vol)}</td>
+    <td class="${r.spread>0.05?"warn":"dim"}">${isFinite(r.spread)?r.spread.toFixed(3)+"%":"—"}</td>
+    <td class="dim">${(r.vol/notional).toFixed(0)}×</td>
+    <td class="dim">${r.type==="PREMARKET"?"pre-IPO":"equity"}</td></tr>`).join("");
+  $("gateWrap").innerHTML = `<table><thead><tr><th>symbol</th><th>gate</th><th>last</th><th>24h</th>
+    <th>volume</th><th>spread</th><th>vol ÷ your size</th><th>class</th></tr></thead><tbody>${body}</tbody></table>`;
+  bindSyms();
+}
+
+function bindSyms(){
+  document.querySelectorAll(".sym[data-s]").forEach(el=>{
+    el.onclick = () => { state.sel = el.dataset.s; saveCfg(); selectSymbol(); };
+  });
+}
+
+/* ------------------------------------------------------------ data pulls */
+async function loadUniverse(){
+  const ei = await get("/fapi/v1/exchangeInfo");
+  state.universe = ei.symbols
+    .filter(s => (s.underlyingType==="EQUITY"||s.underlyingType==="PREMARKET") && s.status==="TRADING")
+    .map(s => ({symbol:s.symbol, type:s.underlyingType, pricePrecision:s.pricePrecision}));
+  state.universe.forEach(u => state.uniMap[u.symbol]=u);
+  $("uniInfo").textContent = `${state.universe.length} US equity perps tracked · `
+    + `basis, depth and liquidation math on live Binance data`;
+}
+
+async function pollMarket(){
+  const [pi, tk, bt] = await Promise.all([
+    safe(()=>get("/fapi/v1/premiumIndex")),
+    safe(()=>get("/fapi/v1/ticker/24hr")),
+    safe(()=>get("/fapi/v1/ticker/bookTicker"))
+  ]);
+  if(pi) for(const p of pi){
+    if(!state.uniMap[p.symbol]) continue;
+    state.premium[p.symbol] = {mark:+p.markPrice, index:+p.indexPrice,
+      funding:+p.lastFundingRate, nextFundingTime:+p.nextFundingTime};
+  }
+  if(tk) for(const t of tk){
+    if(!state.uniMap[t.symbol]) continue;
+    state.ticker[t.symbol] = {vol:+t.quoteVolume, chg:+t.priceChangePercent,
+      last:+t.lastPrice, trades:+t.count};
+  }
+  if(bt) for(const b of bt){
+    if(!state.uniMap[b.symbol]) continue;
+    state.book[b.symbol] = {bid:+b.bidPrice, ask:+b.askPrice};
+  }
+  renderBasis(); renderGap(); renderFunding(); renderGate(); renderCalc();
+  $("lastTick").textContent = " · updated " + new Date().toLocaleTimeString("en-GB",{hour12:false});
+}
+
+function atrFromKlines(k){
+  const ranges = k.map(c => (+c[2] - +c[3]) / +c[1] * 100);
+  const tr = [];
+  for(let i=1;i<k.length;i++){
+    const h=+k[i][2], l=+k[i][3], pc=+k[i-1][4];
+    tr.push(Math.max(h-l, Math.abs(h-pc), Math.abs(l-pc))/pc*100);
+  }
+  const last = tr.slice(-14);
+  return {ranges, atr: last.reduce((a,b)=>a+b,0)/(last.length||1),
+          avg: ranges.reduce((a,b)=>a+b,0)/(ranges.length||1)};
+}
+
+async function loadSymbolStats(sym){
+  const [kd, k5, pk, oiH, lsr] = await Promise.all([
+    safe(()=>get(`/fapi/v1/klines?symbol=${sym}&interval=1d&limit=90`)),
+    safe(()=>get(`/fapi/v1/klines?symbol=${sym}&interval=5m&limit=200`)),
+    safe(()=>get(`/fapi/v1/premiumIndexKlines?symbol=${sym}&interval=1h&limit=500`)),
+    safe(()=>get(`/futures/data/openInterestHist?symbol=${sym}&period=5m&limit=13`)),
+    safe(()=>get(`/futures/data/globalLongShortAccountRatio?symbol=${sym}&period=5m&limit=1`))
+  ]);
+  if(kd && kd.length>2){
+    const d = atrFromKlines(kd);
+    const i = k5 && k5.length>2 ? atrFromKlines(k5) : null;
+    state.atr[sym] = {ranges:d.ranges, dailyAtrPct:d.atr, avgRangePct:d.avg,
+                      atr5mPct: i ? i.atr : null};
+  }
+  if(pk && pk.length>10){
+    const v = pk.map(c=>+c[4]);
+    const mean = v.reduce((a,b)=>a+b,0)/v.length;
+    const sd = Math.sqrt(v.reduce((a,b)=>a+(b-mean)**2,0)/v.length);
+    state.basisHist[sym] = {mean, sd, n:v.length};
+  }
+  if(oiH && oiH.length){
+    const cur = +oiH[oiH.length-1].sumOpenInterestValue;
+    const old = +oiH[0].sumOpenInterestValue;
+    state.oi[sym] = {value:cur, deltaPct: old ? (cur-old)/old*100 : 0,
+                     lsr: lsr && lsr.length ? +lsr[0].longShortRatio : null};
+  } else if(lsr && lsr.length){
+    state.oi[sym] = {value:NaN, deltaPct:NaN, lsr:+lsr[0].longShortRatio};
+  }
+}
+
+async function loadDepth(){
+  const d = await safe(()=>get(`/fapi/v1/depth?symbol=${state.sel}&limit=20`));
+  if(d) { state.depth = d; renderDepth(); }
+}
+
+async function selectSymbol(){
+  document.querySelectorAll("tr").forEach(t=>t.classList.remove("sel"));
+  renderCalc();
+  await Promise.all([ loadDepth(), loadSymbolStats(state.sel) ]);
+  renderCalc(); renderVol(); renderFunding(); renderBasis(); renderGate();
+}
+
+/* ----------------------------------------------------------------- boot */
+async function boot(){
+  loadCfg();
+  ["iAcct","iMargin","iLev","iMmr","iMax"].forEach(id=>{
+    $(id).addEventListener("input", readInputs);
+  });
+  $("bLong").onclick  = ()=>{ state.side="LONG";  setSeg(); saveCfg(); renderCalc(); renderDepth(); };
+  $("bShort").onclick = ()=>{ state.side="SHORT"; setSeg(); saveCfg(); renderCalc(); renderDepth(); };
+  $("bIso").onclick   = ()=>{ state.mode="ISOLATED"; setSeg(); saveCfg(); renderCalc(); };
+  $("bCross").onclick = ()=>{ state.mode="CROSS";    setSeg(); saveCfg(); renderCalc(); };
+  ["gateFilter","gateVol","gateSearch","gateN"].forEach(id=>{
+    $(id).addEventListener("input", renderGate);
+  });
+
+  setInterval(tickClock, 1000); tickClock();
+
+  try{
+    await loadUniverse();
+  }catch(e){
+    $("uniInfo").innerHTML = `<span class="err">universe load failed: ${e.message} —
+      Binance fapi may be blocked on this network</span>`;
+    return;
+  }
+  await pollMarket();
+  // stats for the watchlist, staggered so we stay well inside rate limits
+  for(const s of state.watch){ await loadSymbolStats(s); }
+  renderVol(); renderFunding(); renderCalc();
+  await loadDepth();
+
+  setInterval(pollMarket, 10000);
+  setInterval(loadDepth, 10000);
+  setInterval(()=>{ loadSymbolStats(state.sel).then(()=>{renderVol();renderFunding();renderCalc();}); }, 60000);
+}
+boot();
+</script>
+</body>
+</html>
