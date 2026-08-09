@@ -122,10 +122,12 @@ canvas{display:block;width:100%;height:44px}
 
   <!-- ============ RISK / POSITION ============ -->
   <div class="card c4">
-    <h2>Position &amp; Liquidation <em id="calcSym">SPCXUSDT</em></h2>
+    <h2>Position &amp; Liquidation
+      <span><a href="#" id="btnReset" style="font-size:10px;text-decoration:none;opacity:.6">reset</a>
+      <em id="calcSym" style="margin-left:8px">SPCXUSDT</em></span></h2>
 
     <div class="row r2">
-      <div><label>Account (USDT)</label><input id="iAcct" type="number" value="1500" step="100"></div>
+      <div><label>Account (USDT)</label><input id="iAcct" type="number" value="10000" step="500"></div>
       <div><label>Margin / trade</label><input id="iMargin" type="number" value="1500" step="50"></div>
     </div>
     <div class="row r3">
@@ -238,7 +240,9 @@ canvas{display:block;width:100%;height:44px}
    ========================================================================= */
 
 const API = "https://fapi.binance.com";
-const LS  = "usperp.cfg.v1";
+const LS  = "usperp.cfg.v2";   // bumped: v1 saved a 1500 default account
+
+const DEFAULTS = { acct:10000, margin:1500, lev:20, mmr:1.0, max:4, fee:0.05 };
 
 const state = {
   universe: [],        // [{symbol, type, pricePrecision, tickSize}]
@@ -253,7 +257,7 @@ const state = {
   sel:     "SPCXUSDT",
   side:    "LONG",
   mode:    "ISOLATED",
-  cfg: { acct:1500, margin:1500, lev:20, mmr:1.0, max:4, fee:0.05 },
+  cfg: {...DEFAULTS},
   watch: ["SPCXUSDT","TSLAUSDT","NVDAUSDT","QQQUSDT","SPYUSDT","MSTRUSDT","GOOGLUSDT","SOXLUSDT"]
 };
 
@@ -734,6 +738,15 @@ async function boot(){
   ["gateFilter","gateVol","gateSearch","gateN"].forEach(id=>{
     $(id).addEventListener("input", renderGate);
   });
+  $("btnReset").onclick = e => {
+    e.preventDefault();
+    localStorage.removeItem(LS);
+    Object.assign(state.cfg, DEFAULTS);
+    state.side="LONG"; state.mode="ISOLATED";
+    $("iAcct").value=DEFAULTS.acct; $("iMargin").value=DEFAULTS.margin;
+    $("iLev").value=DEFAULTS.lev;   $("iMmr").value=DEFAULTS.mmr; $("iMax").value=DEFAULTS.max;
+    setSeg(); saveCfg(); renderCalc(); renderDepth(); renderVol(); renderGate();
+  };
 
   setInterval(tickClock, 1000); tickClock();
 
