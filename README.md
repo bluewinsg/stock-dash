@@ -53,9 +53,17 @@ code on a public Pages site is readable by anyone.
 ```
 cd worker
 npx wrangler login
-npx wrangler secret put FINNHUB_KEY      # prompts; paste the key here, never in a file
 npx wrangler deploy
+npx wrangler secret put FINNHUB_KEY
 ```
+
+`FINNHUB_KEY` is the secret's **name**, typed literally — not your key. The last command then
+prints `Enter a secret value:` and you paste the key at that prompt, where it is not echoed and
+never reaches a file or your shell history.
+
+Passing the key itself as the argument creates a secret *named* after your key, leaves
+`FINNHUB_KEY` unset, and every route returns `500 FINNHUB_KEY secret not set on the worker`.
+Recover with `npx wrangler secret delete <that-name>` and re-run the command correctly.
 
 Then paste the resulting `https://stock-dash-api.<you>.workers.dev` URL into the News panel.
 It persists to `localStorage`. Until it is set, the macro calendar still works and the news
