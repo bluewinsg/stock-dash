@@ -101,6 +101,15 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
     if (request.method !== "GET") return err(405, "GET only", origin);
+
+    // Browsers always send Origin on cross-origin fetches, so requiring it
+    // costs the dashboard nothing and turns away casual scanners and stray
+    // curl traffic that would otherwise burn the Finnhub quota. A determined
+    // caller can forge the header — this protects the rate limit, not the
+    // key. The key is safe because it never leaves the worker.
+    if (!ALLOWED_ORIGINS.includes(origin)) {
+      return err(403, "origin not allowed", origin);
+    }
     if (!env.FINNHUB_KEY) return err(500, "FINNHUB_KEY secret not set on the worker", origin);
 
     // Serve from the edge cache when we can — keeps us inside the free tier.

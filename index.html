@@ -234,7 +234,8 @@ canvas{display:block;width:100%;height:44px}
 
   <!-- ============ NEWS ============ -->
   <div class="card c6">
-    <h2>News <em id="newsSym">—</em></h2>
+    <h2>News <span><a href="#" id="btnWorker" style="font-size:10px;text-decoration:none;opacity:.6">endpoint</a>
+      <em id="newsSym" style="margin-left:8px">—</em></span></h2>
     <div id="newsWrap"></div>
     <div class="note" id="newsNote">Company news for the selected symbol, newest first. Anything under
       30 minutes old is highlighted — on a 24/7 perp that is the window where the perp has moved and
@@ -280,6 +281,12 @@ const LS  = "usperp.cfg.v2";   // bumped: v1 saved a 1500 default account
 
 const DEFAULTS = { acct:10000, margin:1500, lev:20, mmr:1.0, max:4, fee:0.05 };
 
+// Ships as the default so a new device/browser works with no setup. This is
+// not a credential — the Finnhub key lives inside the worker and is never
+// sent to the page. The worker additionally refuses requests that don't
+// carry an allowed Origin. Override below if you redeploy elsewhere.
+const DEFAULT_WORKER = "https://stock-dash-api.tansherwin.workers.dev";
+
 const state = {
   universe: [],        // [{symbol, type, pricePrecision, tickSize}]
   uniMap: {},
@@ -292,7 +299,7 @@ const state = {
   oi:      {},         // symbol -> {value, deltaPct}
   macro:   [],          // static high-impact US releases
   earnings:{},          // symbol -> next earnings row (via worker)
-  workerUrl:"",         // Cloudflare worker base URL; empty = news/earnings off
+  workerUrl:DEFAULT_WORKER,   // overridable per browser via the News panel
   sel:     "SPCXUSDT",
   side:    "LONG",
   mode:    "ISOLATED",
@@ -1085,11 +1092,19 @@ async function boot(){
     $(id).addEventListener("input", renderGate);
   });
   $("wlAdd").addEventListener("change", e => { addWatch(e.target.value); e.target.value=""; });
+  $("btnWorker").onclick = e => {
+    e.preventDefault();
+    const v = prompt("Worker endpoint (blank restores the default):", state.workerUrl);
+    if(v === null) return;
+    state.workerUrl = v.trim() || DEFAULT_WORKER;
+    saveCfg(); state.earnings = {};
+    loadNews(); loadEarnings().then(renderCatalysts);
+  };
   $("btnReset").onclick = e => {
     e.preventDefault();
     localStorage.removeItem(LS);
     Object.assign(state.cfg, DEFAULTS);
-    state.side="LONG"; state.mode="ISOLATED";
+    state.side="LONG"; state.mode="ISOLATED"; state.workerUrl=DEFAULT_WORKER;
     $("iAcct").value=DEFAULTS.acct; $("iMargin").value=DEFAULTS.margin;
     $("iLev").value=DEFAULTS.lev;   $("iMmr").value=DEFAULTS.mmr; $("iMax").value=DEFAULTS.max;
     setSeg(); saveCfg(); renderCalc(); renderDepth(); renderVol(); renderGate();
