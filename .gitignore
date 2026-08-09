@@ -1,0 +1,13 @@
+# Wrangler's local cache holds Cloudflare account identifiers. This repo is
+# public — keep it out.
+.wrangler/
+worker/.wrangler/
+
+# Secrets never belong in the repo; FINNHUB_KEY lives in Cloudflare via
+# `npx wrangler secret put FINNHUB_KEY`.
+.dev.vars
+.env
+.env.*
+
+node_modules/
+.DS_Store
