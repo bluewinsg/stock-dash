@@ -35,6 +35,50 @@ under $1M, and most cannot absorb a leveraged position without walking the book.
 - **Funding & OI** — 8h funding as a share of *your* margin, OI delta, long/short account ratio
 - **Liquidity gate** — classifies every equity perp against your position size
 
+## Catalysts and news (optional)
+
+Two sources, because "news" is two different problems.
+
+**Scheduled — what you can see coming.** `macro-2026.json` holds high-impact US macro releases
+with dates taken from the primary publishers (BLS schedule pages for CPI/PPI/Employment Situation,
+the Fed for FOMC). Weekly jobless claims are generated in code. Add rows to that file and the
+dashboard picks them up with no code change. This needs no key and works out of the box.
+
+**Unscheduled + per-symbol.** Company news and earnings dates come from Finnhub via a Cloudflare
+Worker in `worker/`. The Worker exists so the API key stays server-side — a key in client-side
+code on a public Pages site is readable by anyone.
+
+### Deploying the worker
+
+```
+cd worker
+npx wrangler login
+npx wrangler secret put FINNHUB_KEY      # prompts; paste the key here, never in a file
+npx wrangler deploy
+```
+
+Then paste the resulting `https://stock-dash-api.<you>.workers.dev` URL into the News panel.
+It persists to `localStorage`. Until it is set, the macro calendar still works and the news
+panel shows setup instructions.
+
+Routes: `/news?symbol=` · `/earnings?symbol=` · `/quote?symbol=` · `/status`.
+Responses are edge-cached (news 120s, earnings 1h, quote 30s) to stay inside Finnhub's free tier,
+and CORS is restricted to the Pages origin so the Worker isn't an open proxy.
+
+Binance symbols are mapped to tickers automatically (`SPCXUSDT` → `SPCX`).
+
+### The warning band
+
+The point of the catalyst data is not a headline list — it's a banner on the position panel that
+combines a scheduled event with *your* actual exposure:
+
+> **NVDA earnings in 4d 6h** (amc). It prints after the 16:00 ET close, when the cash index is
+> frozen but the perp keeps trading. You are LONG 20x on NVDA, liq 4.00% away. Largest single-day
+> range in the last 90 sessions: X%.
+
+`amc` earnings are called out specifically: they land while the cash market is shut, so the perp
+reprices against a frozen index with no open to wait for and no circuit breaker.
+
 ## Configuration
 
 Account size, margin per trade, leverage, MMR and max concurrent positions are set in the UI and

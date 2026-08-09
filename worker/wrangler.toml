@@ -1,0 +1,13 @@
+name = "stock-dash-api"
+main = "src/worker.js"
+compatibility_date = "2026-08-01"
+
+# The Finnhub key is NOT set here. Secrets never go in this file — it is
+# committed to a public repo. Set it once from your terminal with:
+#
+#   npx wrangler secret put FINNHUB_KEY
+#
+# Wrangler prompts for the value and stores it encrypted on Cloudflare.
+
+[observability]
+enabled = true

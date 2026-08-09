@@ -151,6 +151,7 @@ canvas{display:block;width:100%;height:44px}
       <div class="stat" id="sAtrI"><i>Liq dist ÷ 5m ATR</i><b id="oAtrI">—</b><s id="oAtrIs">—</s></div>
     </div>
 
+    <div id="catalystWarn"></div>
     <div id="heatBox"></div>
     <div class="note" id="calcNote">Liquidation is isolated-margin math using the MMR you enter.
       Pull the real risk-limit tiers from the Binance app (leverage slider → Risk Limit) and set MMR per symbol for exact numbers.</div>
@@ -205,6 +206,24 @@ canvas{display:block;width:100%;height:44px}
       At 20x a 1% funding print is 20% of your margin — carry is not a rounding error at this leverage.</div>
   </div>
 
+  <!-- ============ CATALYST RADAR ============ -->
+  <div class="card c6">
+    <h2>Catalyst radar <em id="catNext">—</em></h2>
+    <div id="catWrap"><div class="spin">loading…</div></div>
+    <div class="note">Scheduled events only — things you can see coming. Macro dates are from the BLS and
+      Federal Reserve schedules; earnings come from your worker. <b>amc</b> prints land after the 16:00 ET
+      close, while the index is frozen and the perp still trades — that combination is why the row turns red.</div>
+  </div>
+
+  <!-- ============ NEWS ============ -->
+  <div class="card c6">
+    <h2>News <em id="newsSym">—</em></h2>
+    <div id="newsWrap"></div>
+    <div class="note" id="newsNote">Company news for the selected symbol, newest first. Anything under
+      30 minutes old is highlighted — on a 24/7 perp that is the window where the perp has moved and
+      the cash market has not.</div>
+  </div>
+
   <!-- ============ LIQUIDITY GATE ============ -->
   <div class="card c12">
     <h2>Liquidity gate — all US equity perps <em id="gateInfo">—</em></h2>
@@ -254,6 +273,9 @@ const state = {
   atr:     {},         // symbol -> {dailyAtrPct, avgRangePct, ranges[], atr5mPct}
   basisHist:{},        // symbol -> {mean, sd, n}
   oi:      {},         // symbol -> {value, deltaPct}
+  macro:   [],          // static high-impact US releases
+  earnings:{},          // symbol -> next earnings row (via worker)
+  workerUrl:"",         // Cloudflare worker base URL; empty = news/earnings off
   sel:     "SPCXUSDT",
   side:    "LONG",
   mode:    "ISOLATED",
@@ -352,6 +374,7 @@ function loadCfg(){
     if(c.side) state.side = c.side;
     if(c.mode) state.mode = c.mode;
     if(c.watch) state.watch = c.watch;
+    if(c.workerUrl) state.workerUrl = c.workerUrl;
   }catch(e){}
   $("iAcct").value=state.cfg.acct; $("iMargin").value=state.cfg.margin;
   $("iLev").value=state.cfg.lev;   $("iMmr").value=state.cfg.mmr; $("iMax").value=state.cfg.max;
@@ -359,7 +382,7 @@ function loadCfg(){
 }
 function saveCfg(){
   localStorage.setItem(LS, JSON.stringify({cfg:state.cfg, sel:state.sel,
-    side:state.side, mode:state.mode, watch:state.watch}));
+    side:state.side, mode:state.mode, watch:state.watch, workerUrl:state.workerUrl}));
 }
 function readInputs(){
   state.cfg.acct   = +$("iAcct").value   || 0;
@@ -636,6 +659,195 @@ function bindSyms(){
   });
 }
 
+/* ==================================================== catalysts & news ==
+   Two sources, because "news" is two different problems:
+     - scheduled events you can see coming  -> macro-2026.json + /earnings
+     - unscheduled news that already broke  -> /news
+   Everything key-bearing goes through the worker; this page holds no secret.
+   ====================================================================== */
+
+const tickerOf = s => (s||"").replace(/(USDT|USD1|USDC)$/,"");
+
+function etOffsetMs(){
+  // US Eastern is -4 (EDT) or -5 (EST). Derive it rather than hardcode.
+  const now = new Date();
+  const et = new Date(now.toLocaleString("en-US",{timeZone:"America/New_York"}));
+  const utc = new Date(now.toLocaleString("en-US",{timeZone:"UTC"}));
+  return utc - et;
+}
+function etToDate(dateStr, timeStr){
+  // "2026-08-12","08:30" (ET) -> Date
+  const [y,m,d] = dateStr.split("-").map(Number);
+  const [hh,mm] = timeStr.split(":").map(Number);
+  return new Date(Date.UTC(y,m-1,d,hh,mm) + etOffsetMs());
+}
+function relTime(ms){
+  const s = Math.abs(ms)/1000, past = ms<0;
+  const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
+  const out = d>0 ? `${d}d ${h}h` : h>0 ? `${h}h ${m}m` : `${m}m`;
+  return past ? out+" ago" : "in "+out;
+}
+
+async function loadMacro(){
+  try{
+    const r = await fetch("macro-2026.json",{cache:"no-store"});
+    const j = await r.json();
+    state.macro = (j.events||[]).map(e=>({
+      when: etToDate(e.date, e.time), name:e.name, detail:e.detail,
+      impact:e.impact, kind:"macro"
+    }));
+    // Weekly jobless claims: every Thursday 08:30 ET for the next 8 weeks.
+    // Generated, not listed — holiday weeks occasionally shift to Wednesday.
+    const now = new Date();
+    for(let i=0;i<8;i++){
+      const d = new Date(now.getTime() + i*7*864e5);
+      const et = new Date(d.toLocaleString("en-US",{timeZone:"America/New_York"}));
+      et.setDate(et.getDate() + ((4 - et.getDay() + 7) % 7));   // next Thursday
+      const ds = et.toISOString().slice(0,10);
+      const when = etToDate(ds,"08:30");
+      // Dedupe on name+time, not time alone — claims and PPI genuinely share
+      // the 08:30 slot, and matching on time only silently dropped claims.
+      if(when > now && !state.macro.some(x=>+x.when===+when && x.name==="Jobless claims"))
+        state.macro.push({when, name:"Jobless claims", detail:"weekly · generated",
+                          impact:"low", kind:"macro"});
+    }
+    state.macro.sort((a,b)=>a.when-b.when);
+  }catch(e){ console.warn("macro calendar:", e.message); }
+}
+
+async function wget(path){
+  if(!state.workerUrl) return null;
+  const base = state.workerUrl.replace(/\/+$/,"");
+  const r = await fetch(base+path, {cache:"no-store"});
+  if(!r.ok) throw new Error(path+" → "+r.status);
+  return r.json();
+}
+
+async function loadEarnings(){
+  if(!state.workerUrl) return;
+  for(const s of state.watch){
+    if(state.earnings[s] !== undefined) continue;
+    try{
+      const j = await wget(`/earnings?symbol=${tickerOf(s)}`);
+      state.earnings[s] = (j && j.next) ? j.next : null;
+    }catch(e){ state.earnings[s] = null; }
+  }
+}
+
+async function loadNews(){
+  const box = $("newsWrap");
+  $("newsSym").textContent = tickerOf(state.sel);
+  if(!state.workerUrl){
+    box.innerHTML = `<div class="note" style="border:0;margin:0;padding:0">
+      <b>Worker not configured.</b> Per-symbol news and earnings need the Cloudflare worker
+      (it holds the Finnhub key so this page doesn't). Deploy <code>worker/</code>, then paste
+      its URL below.
+      <div class="row" style="margin-top:9px"><input id="wUrl" type="text"
+        placeholder="https://stock-dash-api.<you>.workers.dev" value=""></div></div>`;
+    const inp = $("wUrl");
+    if(inp) inp.addEventListener("change", ()=>{
+      state.workerUrl = inp.value.trim(); saveCfg();
+      state.earnings = {}; loadEarnings().then(renderCatalysts); loadNews();
+    });
+    return;
+  }
+  try{
+    const j = await wget(`/news?symbol=${tickerOf(state.sel)}`);
+    const arts = (j && j.articles) || [];
+    if(!arts.length){ box.innerHTML = `<div class="spin">no recent news for ${tickerOf(state.sel)}</div>`; return; }
+    box.innerHTML = arts.slice(0,14).map(a=>{
+      const age = Date.now() - a.t*1000;
+      const fresh = age < 30*60*1000;
+      return `<div style="padding:6px 0;border-bottom:1px solid rgba(30,38,53,.5)">
+        <div style="font-size:12px;line-height:1.4">${fresh?'<span class="tag t-cau">NEW</span> ':''}
+          <a href="${a.url}" target="_blank" rel="noopener noreferrer">${a.headline}</a></div>
+        <div class="dim" style="font-size:10px;margin-top:2px">${a.source} · ${relTime(-age)}</div></div>`;
+    }).join("");
+  }catch(e){
+    box.innerHTML = `<div class="err">news unavailable: ${e.message}</div>`;
+  }
+}
+
+/* Merge macro + earnings into one forward-looking list. */
+function catalystList(){
+  const out = state.macro.filter(e=>e.when > Date.now()).slice();
+  for(const s of state.watch){
+    const e = state.earnings[s];
+    if(!e || !e.date) continue;
+    // amc = after close (16:00 ET), bmo = before open (09:30 ET), else midday
+    const t = e.hour==="amc" ? "16:05" : e.hour==="bmo" ? "07:00" : "12:00";
+    const when = etToDate(e.date, t);
+    if(when < Date.now()) continue;
+    out.push({when, name:tickerOf(s)+" earnings", kind:"earnings", symbol:s,
+      detail:(e.hour||"time TBC")+(e.epsEstimate!=null?` · est ${e.epsEstimate}`:""),
+      impact:"high", amc:e.hour==="amc"});
+  }
+  return out.sort((a,b)=>a.when-b.when);
+}
+
+function renderCatalysts(){
+  const list = catalystList();
+  if(!list.length){
+    $("catWrap").innerHTML = `<div class="spin">no scheduled catalysts loaded</div>`; return;
+  }
+  $("catNext").textContent = list[0].name + " " + relTime(list[0].when - Date.now());
+  const rows = list.slice(0,12).map(e=>{
+    const dt = e.when - Date.now();
+    const soon = dt < 60*60*1000, today = dt < 24*60*60*1000;
+    const kl = e.impact==="high" ? (soon?"dn":today?"warn":"") : "dim";
+    const et = new Intl.DateTimeFormat("en-GB",{timeZone:"America/New_York",
+      month:"short",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).format(e.when);
+    const sgt = new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Singapore",
+      hour:"2-digit",minute:"2-digit",hour12:false}).format(e.when);
+    return `<tr class="${e.kind==='earnings'&&e.symbol===state.sel?'sel':''}">
+      <td class="${kl}" style="font-weight:${e.impact==='high'?700:400}">${e.name}</td>
+      <td class="dim">${e.detail||""}</td>
+      <td class="dim">${et} ET</td><td class="dim">${sgt} SGT</td>
+      <td class="${kl}">${relTime(dt)}</td>
+      <td>${e.amc?'<span class="tag t-avoid">AMC</span>':
+            e.impact==='high'?'<span class="tag t-cau">HIGH</span>':''}</td></tr>`;
+  }).join("");
+  $("catWrap").innerHTML = `<table><thead><tr><th>event</th><th>detail</th><th>New York</th>
+    <th>SGT</th><th>countdown</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  renderCatalystWarning(list);
+}
+
+/* The actual warning: scheduled event + YOUR exposure, not a headline list. */
+function renderCatalystWarning(list){
+  const box = $("catalystWarn");
+  const r = calc();
+  if(!r || !list || !list.length){ box.innerHTML=""; return; }
+
+  const tk = tickerOf(state.sel);
+  const relevant = list.filter(e =>
+    (e.kind==="earnings" && e.symbol===state.sel) ||
+    (e.kind==="macro" && e.impact==="high"));
+  if(!relevant.length){ box.innerHTML=""; return; }
+
+  const e = relevant[0];
+  const dt = e.when - Date.now();
+  const a = state.atr[state.sel];
+  const worst = a && a.ranges.length ? Math.max(...a.ranges) : null;
+
+  // Only shout when it is actually close.
+  const within = e.kind==="earnings" ? 7*864e5 : 24*3600e3;
+  if(dt > within){ box.innerHTML=""; return; }
+
+  const hot = dt < 60*60*1000 || (e.kind==="earnings" && dt < 24*3600e3);
+  const style = hot ? "" : "background:rgba(255,176,32,.08);border-color:rgba(255,176,32,.4);color:#ffdca8";
+  const worstTxt = worst
+    ? ` Largest single-day range in the last ${a.ranges.length} sessions: <b>${worst.toFixed(1)}%</b>.`
+    : "";
+  const amcTxt = e.amc
+    ? " It prints <b>after the 16:00 ET close</b>, when the cash index is frozen but the perp keeps trading —"
+      + " there is no open to wait for and no circuit breaker."
+    : "";
+
+  box.innerHTML = `<div class="alertbox" style="${style}">
+    <b>${e.name} ${relTime(dt)}</b> (${e.detail||""}).${amcTxt}
+    You are ${state.side} ${state.cfg.lev}x on ${tk}, liq <b>${r.dist.toFixed(2)}%</b> away.${worstTxt}</div>`;
+}
+
 /* ------------------------------------------------------------ data pulls */
 async function loadUniverse(){
   const ei = await get("/fapi/v1/exchangeInfo");
@@ -721,8 +933,8 @@ async function loadDepth(){
 async function selectSymbol(){
   document.querySelectorAll("tr").forEach(t=>t.classList.remove("sel"));
   renderCalc();
-  await Promise.all([ loadDepth(), loadSymbolStats(state.sel) ]);
-  renderCalc(); renderVol(); renderFunding(); renderBasis(); renderGate();
+  await Promise.all([ loadDepth(), loadSymbolStats(state.sel), loadNews() ]);
+  renderCalc(); renderVol(); renderFunding(); renderBasis(); renderGate(); renderCatalysts();
 }
 
 /* ----------------------------------------------------------------- boot */
@@ -757,14 +969,21 @@ async function boot(){
       Binance fapi may be blocked on this network</span>`;
     return;
   }
+  await loadMacro();
+  renderCatalysts();
   await pollMarket();
   // stats for the watchlist, staggered so we stay well inside rate limits
   for(const s of state.watch){ await loadSymbolStats(s); }
   renderVol(); renderFunding(); renderCalc();
   await loadDepth();
+  await loadNews();
+  await loadEarnings();
+  renderCatalysts();
 
   setInterval(pollMarket, 10000);
   setInterval(loadDepth, 10000);
+  setInterval(renderCatalysts, 30000);          // countdowns + warning band
+  setInterval(loadNews, 180000);                // worker caches at 120s anyway
   setInterval(()=>{ loadSymbolStats(state.sel).then(()=>{renderVol();renderFunding();renderCalc();}); }, 60000);
 }
 boot();
