@@ -160,12 +160,28 @@ canvas{display:block;width:100%;height:44px}
 
   <!-- ============ BASIS ============ -->
   <div class="card c8">
-    <h2>Basis monitor — perp vs underlying index <em id="basisAge">—</em></h2>
+    <h2>Basis monitor — perp vs underlying index
+      <span style="display:flex;gap:8px;align-items:center">
+        <input id="wlAdd" type="text" placeholder="add symbol e.g. AAPLUSDT"
+          style="width:190px;padding:4px 7px;font-size:11px" list="wlOptions">
+        <datalist id="wlOptions"></datalist>
+        <em id="basisAge">—</em></span></h2>
     <div id="basisWrap"><div class="spin">loading…</div></div>
     <div class="note">Basis = (mark − index) ÷ index. Z-score is against the last ~500h of that symbol's own premium
       history, so it says "wide for <i>this</i> contract", not wide in the abstract. When the cash market is shut the
       index is frozen at the last print — basis then measures how far the perp has run ahead of a stale reference,
       which is what resolves into the 09:30 ET open.</div>
+  </div>
+
+  <!-- ============ CHECKLIST ============ -->
+  <div class="card c12">
+    <h2>Pre-trade checklist <em id="chkSym">—</em></h2>
+    <div id="chkWrap" class="stats" style="grid-template-columns:repeat(5,1fr)"></div>
+    <div id="chkVerdict"></div>
+    <div class="note">These are the four objective disqualifiers, run against your current size and
+      leverage. They answer <i>can I survive this trade at this size</i> — nothing here is directional,
+      and a full set of passes is not a reason to enter. Direction is your call; this only stops a
+      thesis being killed by a book you can't exit or a print you forgot about.</div>
   </div>
 
   <!-- ============ DEPTH / SLIPPAGE ============ -->
@@ -391,7 +407,7 @@ function readInputs(){
   state.cfg.lev    = +$("iLev").value    || 1;
   state.cfg.mmr    = +$("iMmr").value    || 0.5;
   state.cfg.max    = +$("iMax").value    || 1;
-  saveCfg(); renderCalc(); renderDepth(); renderVol(); renderGate();
+  saveCfg(); renderCalc(); renderDepth(); renderVol(); renderGate(); renderChecklist();
 }
 function setSeg(){
   $("bLong").classList.toggle("on", state.side==="LONG");
@@ -471,6 +487,106 @@ function renderCalc(){
   $("heatBox").innerHTML = h;
 }
 
+/* ============================================= pre-trade checklist ======
+   The four objective disqualifiers, evaluated against the current size and
+   leverage. Deliberately non-directional: every check is about whether the
+   position can be entered, held and exited — never about where price goes.
+   ====================================================================== */
+function checklist(){
+  const r = calc(); if(!r) return null;
+  const sym = state.sel, out = [];
+
+  // 1. Liquidity gate — is the symbol's turnover meaningful vs your size?
+  const t = state.ticker[sym];
+  if(t){
+    const mult = t.vol / r.notion;
+    out.push({ label:"Liquidity", pass: mult>=100, warn: mult>=20 && mult<100,
+      value: mult>=1000 ? Math.round(mult)+"×" : mult.toFixed(0)+"×",
+      sub: usd(t.vol)+" vol ÷ your size" });
+  }
+
+  // 2. Book depth — can you actually get out at this size?
+  const d = state.depth;
+  if(d && d.bids && d.bids.length){
+    const side = state.side==="LONG" ? d.bids : d.asks;
+    const depth10 = side.slice(0,10).reduce((a,l)=>a+(+l[0])*(+l[1]),0);
+    const consumed = r.notion/depth10*100;
+    out.push({ label:"Exit depth", pass: consumed<=40, warn: consumed<=100,
+      value: consumed>999?">999%":consumed.toFixed(0)+"%",
+      sub: usd(depth10)+" on the exit side" });
+  }
+
+  // 3. Liquidation distance vs the symbol's ordinary daily range.
+  const a = state.atr[sym];
+  if(a){
+    const n = r.dist / a.dailyAtrPct;
+    const hit = a.ranges.filter(x=>x>r.dist).length;
+    out.push({ label:"Liq vs ATR", pass: n>=2, warn: n>=1,
+      value: n.toFixed(2)+"×",
+      sub: `${hit}/${a.ranges.length} days ranged wider` });
+  }
+
+  // 4. Scheduled catalysts inside a plausible holding window.
+  const list = catalystList();
+  const tk = tickerOf(sym);
+  const near = list.find(e =>
+    (e.kind==="earnings" && e.symbol===sym && (e.when-Date.now()) < 7*864e5) ||
+    (e.kind==="macro" && e.impact==="high" && (e.when-Date.now()) < 24*3600e3));
+  out.push({ label:"Catalysts", pass: !near, warn: !!near && !(near.amc),
+    value: near ? relTime(near.when-Date.now()) : "clear",
+    sub: near ? near.name + (near.amc ? " · AMC" : "") : "none within window" });
+
+  return out;
+}
+
+function renderChecklist(){
+  $("chkSym").textContent = state.sel;
+  const c = checklist();
+  if(!c){ $("chkWrap").innerHTML=""; $("chkVerdict").innerHTML=""; return; }
+
+  const fails = c.filter(x=>!x.pass && !x.warn).length;
+  const warns = c.filter(x=>!x.pass && x.warn).length;
+
+  $("chkWrap").innerHTML = c.map(x=>{
+    const kl = x.pass ? "good" : x.warn ? "caution" : "alert";
+    const mark = x.pass ? "PASS" : x.warn ? "CAUTION" : "FAIL";
+    return `<div class="stat ${kl}"><i>${x.label} · ${mark}</i>
+      <b>${x.value}</b><s>${x.sub}</s></div>`;
+  }).join("") + `<div class="stat ${fails?"alert":warns?"caution":"good"}">
+      <i>Verdict</i><b>${fails ? fails+" FAIL" : warns ? warns+" CAUTION" : "ALL CLEAR"}</b>
+      <s>at ${usd(state.cfg.margin*state.cfg.lev)} notional</s></div>`;
+
+  $("chkVerdict").innerHTML = fails
+    ? `<div class="alertbox"><b>${fails} hard failure${fails>1?"s":""} at this size.</b>
+        Reducing notional changes liquidity and depth directly — the ATR and catalyst checks it will not.</div>`
+    : warns
+    ? `<div class="alertbox" style="background:rgba(255,176,32,.08);border-color:rgba(255,176,32,.4);color:#ffdca8">
+        Passable but tight. ${warns} check${warns>1?"s are":" is"} in the caution band.</div>`
+    : `<div class="okbox">All four clear at ${usd(state.cfg.margin*state.cfg.lev)} notional.
+        This says the position is survivable at this size — it says nothing about direction.</div>`;
+}
+
+/* -------------------------------------------------------- watchlist edit */
+function addWatch(sym){
+  sym = (sym||"").trim().toUpperCase();
+  if(!sym) return;
+  if(!state.uniMap[sym]){
+    const guess = Object.keys(state.uniMap).find(k=>k.startsWith(sym));
+    if(!guess){ alert(sym+" is not a listed US equity perp."); return; }
+    sym = guess;
+  }
+  if(state.watch.includes(sym)) return;
+  state.watch.push(sym); saveCfg();
+  loadSymbolStats(sym).then(()=>{ renderBasis(); renderVol(); renderFunding(); });
+  if(state.workerUrl) loadEarnings().then(renderCatalysts);
+  renderBasis(); renderGap();
+}
+function removeWatch(sym){
+  state.watch = state.watch.filter(s=>s!==sym);
+  delete state.earnings[sym];
+  saveCfg(); renderBasis(); renderVol(); renderFunding(); renderGap(); renderCatalysts();
+}
+
 function renderBasis(){
   const rows = state.watch.map(s=>{
     const p = state.premium[s], t = state.ticker[s];
@@ -487,12 +603,17 @@ function renderBasis(){
       <td class="${zc}">${isFinite(z)?fmt(z,1)+"σ":"—"}</td>
       <td class="${cls(p.funding)}">${p.funding===0?"0.0000%":pct(p.funding*100,4)}</td>
       <td class="${t?cls(t.chg):""}">${t?pct(t.chg):"—"}</td>
-      <td class="dim">${t?usd(t.vol):"—"}</td></tr>`;
+      <td class="dim">${t?usd(t.vol):"—"}</td>
+      <td><a href="#" class="wlDel dim" data-s="${s}" title="remove from watchlist"
+        style="text-decoration:none">×</a></td></tr>`;
   }).join("");
   $("basisWrap").innerHTML = `<table><thead><tr>
     <th>symbol</th><th>mark</th><th>index</th><th>basis</th><th>z</th>
-    <th>funding</th><th>24h</th><th>volume</th></tr></thead><tbody>${rows}</tbody></table>`;
+    <th>funding</th><th>24h</th><th>volume</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   bindSyms();
+  document.querySelectorAll(".wlDel").forEach(el=>{
+    el.onclick = e => { e.preventDefault(); removeWatch(el.dataset.s); };
+  });
   $("basisAge").textContent = new Date().toLocaleTimeString("en-GB",{hour12:false});
 }
 
@@ -648,10 +769,16 @@ function renderGate(){
     <td>${usd(r.vol)}</td>
     <td class="${r.spread>0.05?"warn":"dim"}">${isFinite(r.spread)?r.spread.toFixed(3)+"%":"—"}</td>
     <td class="dim">${(r.vol/notional).toFixed(0)}×</td>
-    <td class="dim">${r.type==="PREMARKET"?"pre-IPO":"equity"}</td></tr>`).join("");
+    <td class="dim">${r.type==="PREMARKET"?"pre-IPO":"equity"}</td>
+    <td>${state.watch.includes(r.sym) ? '<span class="dim">on list</span>'
+      : `<a href="#" class="wlAddBtn" data-s="${r.sym}" style="text-decoration:none">+ watch</a>`}</td></tr>`).join("");
   $("gateWrap").innerHTML = `<table><thead><tr><th>symbol</th><th>gate</th><th>last</th><th>24h</th>
-    <th>volume</th><th>spread</th><th>vol ÷ your size</th><th>class</th></tr></thead><tbody>${body}</tbody></table>`;
+    <th>volume</th><th>spread</th><th>vol ÷ your size</th><th>class</th><th></th>
+    </tr></thead><tbody>${body}</tbody></table>`;
   bindSyms();
+  document.querySelectorAll(".wlAddBtn").forEach(el=>{
+    el.onclick = e => { e.preventDefault(); addWatch(el.dataset.s); renderGate(); };
+  });
 }
 
 function bindSyms(){
@@ -860,6 +987,8 @@ async function loadUniverse(){
     .filter(s => (s.underlyingType==="EQUITY"||s.underlyingType==="PREMARKET") && s.status==="TRADING")
     .map(s => ({symbol:s.symbol, type:s.underlyingType, pricePrecision:s.pricePrecision}));
   state.universe.forEach(u => state.uniMap[u.symbol]=u);
+  const dl = $("wlOptions");
+  if(dl) dl.innerHTML = state.universe.map(u=>`<option value="${u.symbol}">`).join("");
   $("uniInfo").textContent = `${state.universe.length} US equity perps tracked · `
     + `basis, depth and liquidation math on live Binance data`;
 }
@@ -884,7 +1013,7 @@ async function pollMarket(){
     if(!state.uniMap[b.symbol]) continue;
     state.book[b.symbol] = {bid:+b.bidPrice, ask:+b.askPrice};
   }
-  renderBasis(); renderGap(); renderFunding(); renderGate(); renderCalc();
+  renderBasis(); renderGap(); renderFunding(); renderGate(); renderCalc(); renderChecklist();
   $("lastTick").textContent = " · updated " + new Date().toLocaleTimeString("en-GB",{hour12:false});
 }
 
@@ -932,14 +1061,14 @@ async function loadSymbolStats(sym){
 
 async function loadDepth(){
   const d = await safe(()=>get(`/fapi/v1/depth?symbol=${state.sel}&limit=20`));
-  if(d) { state.depth = d; renderDepth(); }
+  if(d) { state.depth = d; renderDepth(); renderChecklist(); }
 }
 
 async function selectSymbol(){
   document.querySelectorAll("tr").forEach(t=>t.classList.remove("sel"));
   renderCalc();
   await Promise.all([ loadDepth(), loadSymbolStats(state.sel), loadNews() ]);
-  renderCalc(); renderVol(); renderFunding(); renderBasis(); renderGate(); renderCatalysts();
+  renderCalc(); renderVol(); renderFunding(); renderBasis(); renderGate(); renderCatalysts(); renderChecklist();
 }
 
 /* ----------------------------------------------------------------- boot */
@@ -948,13 +1077,14 @@ async function boot(){
   ["iAcct","iMargin","iLev","iMmr","iMax"].forEach(id=>{
     $(id).addEventListener("input", readInputs);
   });
-  $("bLong").onclick  = ()=>{ state.side="LONG";  setSeg(); saveCfg(); renderCalc(); renderDepth(); };
-  $("bShort").onclick = ()=>{ state.side="SHORT"; setSeg(); saveCfg(); renderCalc(); renderDepth(); };
-  $("bIso").onclick   = ()=>{ state.mode="ISOLATED"; setSeg(); saveCfg(); renderCalc(); };
-  $("bCross").onclick = ()=>{ state.mode="CROSS";    setSeg(); saveCfg(); renderCalc(); };
+  $("bLong").onclick  = ()=>{ state.side="LONG";  setSeg(); saveCfg(); renderCalc(); renderDepth(); renderChecklist(); };
+  $("bShort").onclick = ()=>{ state.side="SHORT"; setSeg(); saveCfg(); renderCalc(); renderDepth(); renderChecklist(); };
+  $("bIso").onclick   = ()=>{ state.mode="ISOLATED"; setSeg(); saveCfg(); renderCalc(); renderChecklist(); };
+  $("bCross").onclick = ()=>{ state.mode="CROSS";    setSeg(); saveCfg(); renderCalc(); renderChecklist(); };
   ["gateFilter","gateVol","gateSearch","gateN"].forEach(id=>{
     $(id).addEventListener("input", renderGate);
   });
+  $("wlAdd").addEventListener("change", e => { addWatch(e.target.value); e.target.value=""; });
   $("btnReset").onclick = e => {
     e.preventDefault();
     localStorage.removeItem(LS);
@@ -987,7 +1117,7 @@ async function boot(){
 
   setInterval(pollMarket, 10000);
   setInterval(loadDepth, 10000);
-  setInterval(renderCatalysts, 30000);          // countdowns + warning band
+  setInterval(()=>{ renderCatalysts(); renderChecklist(); }, 30000);          // countdowns + warning band
   setInterval(loadNews, 180000);                // worker caches at 120s anyway
   setInterval(()=>{ loadSymbolStats(state.sel).then(()=>{renderVol();renderFunding();renderCalc();}); }, 60000);
 }
