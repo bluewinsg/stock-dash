@@ -133,7 +133,7 @@ canvas{display:block;width:100%;height:44px}
     </div>
     <div class="row r3">
       <div><label>Leverage</label><input id="iLev" type="number" value="20" step="1" min="1" max="25"></div>
-      <div><label>MMR %</label><input id="iMmr" type="number" value="1.0" step="0.1"></div>
+      <div><label>MMR %</label><input id="iMmr" type="number" value="0.78" step="0.01"></div>
       <div><label>Max open</label><input id="iMax" type="number" value="4" step="1" min="1"></div>
     </div>
     <div class="row r2">
@@ -279,7 +279,12 @@ canvas{display:block;width:100%;height:44px}
 const API = "https://fapi.binance.com";
 const LS  = "usperp.cfg.v2";   // bumped: v1 saved a 1500 default account
 
-const DEFAULTS = { acct:10000, margin:1500, lev:20, mmr:1.0, max:4, fee:0.05 };
+// mmr 0.78 is not a guess: it was back-solved from a live isolated SPCXUSDT
+// position and reproduces Binance's own reported liquidation price to within
+// a cent. It is still tier-dependent — maintenance margin steps up with
+// notional and differs per symbol — so override it from the Risk Limit table
+// when trading a different name or a much larger size.
+const DEFAULTS = { acct:10000, margin:1500, lev:20, mmr:0.78, max:4, fee:0.05 };
 
 // Ships as the default so a new device/browser works with no setup. This is
 // not a credential — the Finnhub key lives inside the worker and is never
