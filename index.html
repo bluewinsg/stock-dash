@@ -184,6 +184,29 @@ canvas{display:block;width:100%;height:44px}
       thesis being killed by a book you can't exit or a print you forgot about.</div>
   </div>
 
+  <!-- ============ CHART ============ -->
+  <div class="card c8">
+    <h2>Price &amp; basis <span>
+      <select id="chartItv" style="width:auto;padding:3px 6px;font-size:11px">
+        <option value="5m">5m</option><option value="15m" selected>15m</option>
+        <option value="30m">30m</option><option value="1h">1h</option></select>
+      <em id="chartSym" style="margin-left:8px">—</em></span></h2>
+    <div id="chartBox" style="height:300px;position:relative"></div>
+    <div id="chartMsg"></div>
+    <div class="note">Candles are the perp; the lower line is basis (mark − index) in percent.
+      While the cash market is shut the index is frozen, so the basis line is drawing the perp's
+      drift away from a stale reference — the thing that resolves at 09:30 ET.</div>
+  </div>
+
+  <!-- ============ GAP INTELLIGENCE ============ -->
+  <div class="card c4">
+    <h2>Overnight gaps <em id="gapStatSym">—</em></h2>
+    <div id="gapStatWrap"><div class="spin">loading…</div></div>
+    <div class="note">Measured on this perp alone: price at the 16:00 ET cash close against the
+      09:30 ET open next session, over the last ~31 sessions. "Filled" means price traded back
+      through the prior close within the first 30 or 60 minutes.</div>
+  </div>
+
   <!-- ============ DEPTH / SLIPPAGE ============ -->
   <div class="card c5">
     <h2>Depth &amp; slippage <em id="depthSym">—</em></h2>
@@ -346,6 +369,8 @@ const state = {
   workerUrl:DEFAULT_WORKER,   // overridable per browser via the News panel
   alertFired:{},        // rule+symbol -> last fire time (cooldown)
   alertLog:[],          // most recent alerts, newest first
+  gapStats:{},          // symbol -> overnight gap distribution
+  chart:null, chartRO:null,
   notify:false,         // browser notifications opted in
   sel:     "SPCXUSDT",
   side:    "LONG",
@@ -461,7 +486,7 @@ function readInputs(){
   state.cfg.lev    = +$("iLev").value    || 1;
   state.cfg.mmr    = +$("iMmr").value    || 0.5;
   state.cfg.max    = +$("iMax").value    || 1;
-  saveCfg(); renderCalc(); renderDepth(); renderVol(); renderGate(); renderChecklist(); renderSizing();
+  saveCfg(); renderCalc(); renderDepth(); renderVol(); renderGate(); renderChecklist(); renderSizing(); renderGapStats();
 }
 function setSeg(){
   $("bLong").classList.toggle("on", state.side==="LONG");
@@ -540,6 +565,183 @@ function renderCalc(){
   }
   $("heatBox").innerHTML = h;
 }
+
+/* ============================================== overnight gap stats =====
+   These instruments trade 24/7 while the underlying does not, so the
+   interesting number is what the perp did between the 16:00 ET cash close
+   and the 09:30 ET open — the window where the index is frozen and there
+   is no underlying to check the price against. Computed from 30m klines;
+   no data source beyond Binance.
+   ====================================================================== */
+function etHM(ms){
+  const p = {};
+  for(const x of new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",hour12:false,
+      year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"})
+      .formatToParts(new Date(ms))) p[x.type]=x.value;
+  if(p.hour==="24") p.hour="00";
+  return { date:`${p.year}-${p.month}-${p.day}`, h:+p.hour, m:+p.minute };
+}
+
+async function loadGapStats(sym){
+  const k = await safe(()=>get(`/fapi/v1/klines?symbol=${sym}&interval=30m&limit=1500`));
+  if(!k || k.length<50){ state.gapStats[sym]=null; return; }
+
+  const bars = k.map(c=>({ t:+c[0], et:etHM(+c[0]),
+    o:+c[1], h:+c[2], l:+c[3], c:+c[4] }));
+
+  const closes = {}, opens = {};
+  bars.forEach((b,i)=>{
+    if(b.et.h===15 && b.et.m===30) closes[b.et.date] = {p:b.c, i};
+    if(b.et.h=== 9 && b.et.m===30) opens[b.et.date]  = {p:b.o, i};
+  });
+
+  const gaps = [];
+  const openDates = Object.keys(opens).sort();
+  const closeDates = Object.keys(closes).sort();
+  for(const d of openDates){
+    const prior = closeDates.filter(x=>x<d).pop();
+    if(!prior) continue;
+    const pc = closes[prior].p, op = opens[d].p, oi = opens[d].i;
+    const gap = (op-pc)/pc*100;
+    const filled = n => bars.slice(oi, oi+n).some(b=>b.l<=pc && pc<=b.h);
+    gaps.push({ d, gap, f30:filled(1), f60:filled(2) });
+  }
+  if(!gaps.length){ state.gapStats[sym]=null; return; }
+
+  const abs = gaps.map(g=>Math.abs(g.gap)).sort((a,b)=>a-b);
+  const n = gaps.length;
+  state.gapStats[sym] = {
+    n,
+    median: abs[Math.floor(n/2)],
+    p90:    abs[Math.floor(0.9*(n-1))],
+    max:    abs[n-1],
+    upPct:  gaps.filter(g=>g.gap>0).length/n*100,
+    f30:    gaps.filter(g=>g.f30).length/n*100,
+    f60:    gaps.filter(g=>g.f60).length/n*100,
+    last:   gaps[gaps.length-1]
+  };
+}
+
+function renderGapStats(){
+  const sym = state.sel;
+  $("gapStatSym").textContent = tickerOf(sym);
+  const g = state.gapStats[sym];
+  if(g === undefined){ $("gapStatWrap").innerHTML = `<div class="spin">loading…</div>`; return; }
+  if(!g){ $("gapStatWrap").innerHTML = `<div class="spin">not enough session history</div>`; return; }
+
+  const a = state.atr[sym];
+  const r = calc();
+  // How does a 90th-percentile gap compare with the liquidation distance?
+  const vsLiq = r ? g.p90 / r.dist : null;
+
+  $("gapStatWrap").innerHTML = `
+    <div class="stats" style="grid-template-columns:1fr 1fr">
+      <div class="stat"><i>Median gap</i><b>${g.median.toFixed(2)}%</b><s>${g.n} sessions</s></div>
+      <div class="stat ${vsLiq && vsLiq>0.8 ? "alert" : vsLiq && vsLiq>0.5 ? "caution" : ""}">
+        <i>90th percentile</i><b>${g.p90.toFixed(2)}%</b>
+        <s>${vsLiq ? (vsLiq*100).toFixed(0)+"% of your liq distance" : "—"}</s></div>
+      <div class="stat"><i>Filled in 30m</i><b>${g.f30.toFixed(0)}%</b><s>back through prior close</s></div>
+      <div class="stat"><i>Filled in 60m</i><b>${g.f60.toFixed(0)}%</b><s>of ${g.n} gaps</s></div>
+    </div>
+    <table style="margin-top:9px"><tbody>
+      <tr><td class="dim">Largest gap</td><td>${g.max.toFixed(2)}%</td></tr>
+      <tr><td class="dim">Gapped up</td><td>${g.upPct.toFixed(0)}% of sessions</td></tr>
+      <tr><td class="dim">Last session</td>
+        <td class="${cls(g.last.gap)}">${pct(g.last.gap)} ${g.last.f30?'<span class="tag t-ok">filled</span>':''}</td></tr>
+    </tbody></table>
+    ${vsLiq && vsLiq>0.8 ? `<div class="alertbox">A 90th-percentile overnight gap is
+      <b>${(vsLiq*100).toFixed(0)}%</b> of your liquidation distance. A position carried through
+      the close can be most of the way to liquidation before the cash market reopens.</div>` : ""}`;
+}
+
+/* ==================================================== price + basis =====
+   The one external dependency in this file. Pinned, loaded lazily, and
+   the panel degrades to a message if the CDN is unreachable — the rest of
+   the dashboard never depends on it.
+   ====================================================================== */
+const LWC_SRC = "https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js";
+let lwcPromise = null;
+
+function loadLWC(){
+  if(window.LightweightCharts) return Promise.resolve(true);
+  if(lwcPromise) return lwcPromise;
+  lwcPromise = new Promise(res=>{
+    const s = document.createElement("script");
+    s.src = LWC_SRC; s.async = true;
+    s.onload  = ()=>res(true);
+    s.onerror = ()=>res(false);
+    document.head.appendChild(s);
+  });
+  return lwcPromise;
+}
+
+async function renderChart(){
+  const sym = state.sel, itv = $("chartItv").value;
+  $("chartSym").textContent = tickerOf(sym) + " · " + itv;
+
+  const ok = await loadLWC();
+  if(!ok){
+    $("chartBox").innerHTML = "";
+    $("chartMsg").innerHTML = `<div class="alertbox">Chart library unreachable
+      (<code>unpkg.com</code> blocked or offline). Every other panel is unaffected — they run
+      entirely on Binance's API with no third-party code.</div>`;
+    return;
+  }
+  $("chartMsg").innerHTML = "";
+
+  const [k, pk] = await Promise.all([
+    safe(()=>get(`/fapi/v1/klines?symbol=${sym}&interval=${itv}&limit=300`)),
+    safe(()=>get(`/fapi/v1/premiumIndexKlines?symbol=${sym}&interval=${itv}&limit=300`))
+  ]);
+  if(!k || !k.length) return;
+
+  const box = $("chartBox");
+  box.innerHTML = "";
+  if(state.chartRO){ state.chartRO.disconnect(); state.chartRO = null; }
+  const chart = LightweightCharts.createChart(box, {
+    // Explicit width: relying on the container measurement alone leaves the
+    // chart unsized if it is created while the panel has no layout yet.
+    width: box.clientWidth || 600,
+    height: 300,
+    layout:{ background:{color:"#121722"}, textColor:"#7c8aa3", fontSize:11,
+             fontFamily:"ui-monospace,Menlo,monospace" },
+    grid:{ vertLines:{color:"#1e2635"}, horzLines:{color:"#1e2635"} },
+    rightPriceScale:{ borderColor:"#1e2635" },
+    timeScale:{ borderColor:"#1e2635", timeVisible:true, secondsVisible:false },
+    crosshair:{ mode:0 }
+  });
+
+  const candles = chart.addCandlestickSeries({
+    upColor:"#26d07c", downColor:"#ff4d5e",
+    wickUpColor:"#26d07c", wickDownColor:"#ff4d5e",
+    borderVisible:false });
+  candles.setData(k.map(c=>({ time:Math.floor(c[0]/1000),
+    open:+c[1], high:+c[2], low:+c[3], close:+c[4] })));
+
+  if(pk && pk.length){
+    const basis = chart.addLineSeries({ color:"#4d9fff", lineWidth:1,
+      priceScaleId:"basis", priceLineVisible:false, lastValueVisible:false });
+    basis.setData(pk.map(c=>({ time:Math.floor(c[0]/1000), value:+c[4]*100 })));
+    chart.priceScale("basis").applyOptions({ scaleMargins:{ top:0.78, bottom:0 } });
+  }
+  chart.timeScale().fitContent();
+  state.chart = chart;
+
+  // Reflow with the panel — matters on rotate and on the narrow phone layout.
+  if("ResizeObserver" in window){
+    state.chartRO = new ResizeObserver(()=>{
+      if(box.clientWidth) chart.resize(box.clientWidth, 300);
+    });
+    state.chartRO.observe(box);
+  }
+}
+
+// Charting libraries paint inside requestAnimationFrame, which browsers stop
+// servicing on a hidden tab. A chart built while the tab was backgrounded is
+// therefore blank until something forces a repaint — so redraw on the way back.
+document.addEventListener("visibilitychange", ()=>{
+  if(!document.hidden && state.chart) renderChart();
+});
 
 /* ================================================= survivable sizing ====
    Two independent constraints that traders routinely conflate:
@@ -1305,7 +1507,10 @@ async function loadDepth(){
 async function selectSymbol(){
   document.querySelectorAll("tr").forEach(t=>t.classList.remove("sel"));
   renderCalc();
-  await Promise.all([ loadDepth(), loadSymbolStats(state.sel), loadNews() ]);
+  renderGapStats();
+  await Promise.all([ loadDepth(), loadSymbolStats(state.sel), loadNews(),
+                      loadGapStats(state.sel) ]);
+  renderGapStats(); renderChart();
   renderCalc(); renderVol(); renderFunding(); renderBasis(); renderGate(); renderCatalysts(); renderChecklist();
   renderSizing(); renderRS();
 }
@@ -1324,6 +1529,7 @@ async function boot(){
     $(id).addEventListener("input", renderGate);
   });
   ["szAtr","szRisk","szStop"].forEach(id=>$(id).addEventListener("input", renderSizing));
+  $("chartItv").addEventListener("change", renderChart);
   ["alZ","alCat","alFund","alDepth"].forEach(id=>$(id).addEventListener("input", evaluateAlerts));
   $("btnNotify").onclick = async e => {
     e.preventDefault();
@@ -1368,6 +1574,9 @@ async function boot(){
   for(const s of state.watch){ await loadSymbolStats(s); }
   renderVol(); renderFunding(); renderCalc(); renderSizing(); renderRS(); renderAlerts();
   await loadDepth();
+  await loadGapStats(state.sel);
+  renderGapStats();
+  renderChart();
   await loadNews();
   await loadEarnings();
   renderCatalysts();
