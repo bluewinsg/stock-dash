@@ -201,6 +201,7 @@ canvas{display:block;width:100%;height:44px}
   <!-- ============ VOLATILITY ============ -->
   <div class="card c7">
     <h2>Volatility &amp; survivability <em>can 20x survive a normal day?</em></h2>
+    <div id="rsStrip" style="margin-bottom:9px"></div>
     <div id="volWrap"><div class="spin">loading…</div></div>
     <div class="note">"Liq-range days" counts sessions in the last 90 whose intraday range alone exceeded your
       liquidation distance. It is not a prediction — it's how often ordinary noise on this symbol has been
@@ -221,6 +222,44 @@ canvas{display:block;width:100%;height:44px}
     <div id="fundWrap"><div class="spin">loading…</div></div>
     <div class="note">TradFi perps settle funding every 8h, capped at ±1.00%, interest component 0%.
       At 20x a 1% funding print is 20% of your margin — carry is not a rounding error at this leverage.</div>
+  </div>
+
+  <!-- ============ SIZING HELPER ============ -->
+  <div class="card c6">
+    <h2>Survivable sizing <em>work backwards from the liquidation</em></h2>
+    <div class="row r3">
+      <div><label>Liq distance target</label>
+        <select id="szAtr">
+          <option value="1">1.0× daily ATR</option>
+          <option value="1.5">1.5× daily ATR</option>
+          <option value="2" selected>2.0× daily ATR</option>
+          <option value="3">3.0× daily ATR</option>
+        </select></div>
+      <div><label>Max loss (USDT)</label><input id="szRisk" type="number" value="300" step="50"></div>
+      <div><label>Stop distance %</label><input id="szStop" type="number" value="1.5" step="0.1"></div>
+    </div>
+    <div id="szWrap" class="stats" style="grid-template-columns:repeat(3,1fr)"></div>
+    <div id="szNote"></div>
+    <div class="note">Leverage sets liquidation distance; size does not. So the first number is the
+      <b>maximum leverage</b> at which normal daily range doesn't reach your liquidation — that's the
+      only lever that moves it. The second is position size from your stop and max loss, which is a
+      separate constraint. Take the smaller of the two.</div>
+  </div>
+
+  <!-- ============ ALERTS ============ -->
+  <div class="card c6">
+    <h2>Alerts <span><a href="#" id="btnNotify" style="font-size:10px;text-decoration:none">enable notifications</a>
+      <em id="alertState" style="margin-left:8px">off</em></span></h2>
+    <div class="row r4">
+      <div><label>|z| basis &gt;</label><input id="alZ" type="number" value="2" step="0.5"></div>
+      <div><label>Catalyst &lt; hrs</label><input id="alCat" type="number" value="4" step="1"></div>
+      <div><label>Funding &gt; % margin</label><input id="alFund" type="number" value="2" step="0.5"></div>
+      <div><label>Book consumed &gt;%</label><input id="alDepth" type="number" value="100" step="10"></div>
+    </div>
+    <div id="alertLog" style="max-height:190px;overflow:auto;margin-top:9px"></div>
+    <div class="note">Evaluated on every poll against your watchlist and current size. Each rule has a
+      15-minute cooldown per symbol so a persistent condition doesn't spam you. Browser notifications
+      need permission and only fire while the tab is open — this is a monitor, not a pager.</div>
   </div>
 
   <!-- ============ CATALYST RADAR ============ -->
@@ -305,6 +344,9 @@ const state = {
   macro:   [],          // static high-impact US releases
   earnings:{},          // symbol -> next earnings row (via worker)
   workerUrl:DEFAULT_WORKER,   // overridable per browser via the News panel
+  alertFired:{},        // rule+symbol -> last fire time (cooldown)
+  alertLog:[],          // most recent alerts, newest first
+  notify:false,         // browser notifications opted in
   sel:     "SPCXUSDT",
   side:    "LONG",
   mode:    "ISOLATED",
@@ -419,7 +461,7 @@ function readInputs(){
   state.cfg.lev    = +$("iLev").value    || 1;
   state.cfg.mmr    = +$("iMmr").value    || 0.5;
   state.cfg.max    = +$("iMax").value    || 1;
-  saveCfg(); renderCalc(); renderDepth(); renderVol(); renderGate(); renderChecklist();
+  saveCfg(); renderCalc(); renderDepth(); renderVol(); renderGate(); renderChecklist(); renderSizing();
 }
 function setSeg(){
   $("bLong").classList.toggle("on", state.side==="LONG");
@@ -497,6 +539,188 @@ function renderCalc(){
       loss at ${usd(c.margin)}.</div>`;
   }
   $("heatBox").innerHTML = h;
+}
+
+/* ================================================= survivable sizing ====
+   Two independent constraints that traders routinely conflate:
+
+     leverage  -> sets liquidation DISTANCE (size is irrelevant to it)
+     stop+risk -> sets position SIZE (leverage is irrelevant to it)
+
+   At 20x liquidation sits ~1/20 - mmr away regardless of whether the
+   position is $100 or $100k. So "size down to be safer" does nothing for
+   liquidation risk; only cutting leverage does.
+   ====================================================================== */
+function sizing(){
+  const a = state.atr[state.sel], c = state.cfg;
+  const p = state.premium[state.sel];
+  if(!a || !p) return null;
+  const k    = +$("szAtr").value || 2;
+  const risk = +$("szRisk").value || 0;
+  const stop = +$("szStop").value || 0;
+  const mmr  = c.mmr/100;
+
+  // liqDist% = (1/lev - mmr)*100  >=  k * dailyATR%
+  //   =>  lev <= 1 / (k*ATR/100 + mmr)
+  const maxLev = 1 / ((k * a.dailyAtrPct)/100 + mmr);
+  const levOk  = c.lev <= maxLev;
+
+  // Size from stop distance and max acceptable loss (leverage-independent).
+  const notionalFromRisk = stop > 0 ? risk / (stop/100) : NaN;
+  const marginAtMaxLev   = notionalFromRisk / maxLev;
+
+  // What the current leverage actually gives you.
+  const curLiqDist = (1/c.lev - mmr) * 100;
+  const curAtrMult = curLiqDist / a.dailyAtrPct;
+
+  return { k, maxLev, levOk, curLiqDist, curAtrMult, notionalFromRisk,
+           marginAtMaxLev, atr:a.dailyAtrPct, risk, stop };
+}
+
+function renderSizing(){
+  const s = sizing();
+  if(!s){ $("szWrap").innerHTML=""; $("szNote").innerHTML=""; return; }
+  const c = state.cfg;
+
+  $("szWrap").innerHTML = `
+    <div class="stat ${s.levOk?"good":"alert"}"><i>Max leverage for ${s.k}× ATR</i>
+      <b>${s.maxLev.toFixed(1)}×</b><s>you are at ${c.lev}×</s></div>
+    <div class="stat"><i>Notional from stop</i>
+      <b>${isFinite(s.notionalFromRisk)?usd(s.notionalFromRisk):"—"}</b>
+      <s>${usd(s.risk)} loss at ${s.stop}% stop</s></div>
+    <div class="stat"><i>Margin at that leverage</i>
+      <b>${isFinite(s.marginAtMaxLev)?usd(s.marginAtMaxLev):"—"}</b>
+      <s>${(s.marginAtMaxLev/c.acct*100).toFixed(0)}% of account</s></div>`;
+
+  $("szNote").innerHTML = s.levOk
+    ? `<div class="okbox">At ${c.lev}× your liquidation sits <b>${s.curAtrMult.toFixed(2)}×</b>
+        the daily ATR away (${s.curLiqDist.toFixed(2)}% vs ${s.atr.toFixed(2)}% ATR) — clear of the
+        ${s.k}× target.</div>`
+    : `<div class="alertbox"><b>${c.lev}× is above the ${s.maxLev.toFixed(1)}× ceiling</b> for a
+        ${s.k}× ATR buffer on ${tickerOf(state.sel)}. Liquidation is currently
+        <b>${s.curAtrMult.toFixed(2)}×</b> ATR away. Reducing position size will not change this
+        number — only leverage does.</div>`;
+}
+
+/* ------------------------------------------------- relative strength ---- */
+const RS_BENCH = ["SPYUSDT","QQQUSDT","SOXLUSDT"];
+function renderRS(){
+  const sel = state.ticker[state.sel];
+  if(!sel){ $("rsStrip").innerHTML=""; return; }
+  const cells = [[state.sel, sel.chg, true]].concat(
+    RS_BENCH.filter(b=>b!==state.sel).map(b=>[b, state.ticker[b]?.chg, false]));
+  $("rsStrip").innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap">` +
+    cells.map(([s,chg,isSel])=>{
+      if(chg===undefined) return "";
+      const rel = isSel ? null : sel.chg - chg;
+      return `<div class="stat" style="flex:1;min-width:110px;${isSel?"border-color:rgba(77,159,255,.5)":""}">
+        <i>${tickerOf(s)}${isSel?" · selected":""}</i>
+        <b class="${cls(chg)}" style="font-size:15px">${pct(chg)}</b>
+        <s>${rel===null?"24h change":(rel>=0?"leading by ":"lagging by ")+Math.abs(rel).toFixed(2)+"%"}</s></div>`;
+    }).join("") + `</div>`;
+}
+
+/* =========================================================== alerts =====
+   Pure computation over state that is already polled — no new data source.
+   Cooldown per rule+symbol so a persistent condition fires once, not every
+   10 seconds.
+   ====================================================================== */
+const COOLDOWN = 15*60*1000;
+
+function beep(){
+  try{
+    const ctx = new (window.AudioContext||window.webkitAudioContext)();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.frequency.value = 880; g.gain.value = 0.05;
+    o.start(); setTimeout(()=>{ o.stop(); ctx.close(); }, 160);
+  }catch(e){}
+}
+
+function fire(key, title, body, severity){
+  const now = Date.now();
+  if(state.alertFired[key] && now - state.alertFired[key] < COOLDOWN) return;
+  state.alertFired[key] = now;
+  state.alertLog.unshift({t:now, title, body, severity});
+  state.alertLog = state.alertLog.slice(0,40);
+  if(state.notify && "Notification" in window && Notification.permission==="granted"){
+    try{ new Notification(title, {body, tag:key}); }catch(e){}
+  }
+  beep();
+  renderAlerts();
+}
+
+function evaluateAlerts(){
+  const c = state.cfg;
+  const zLim    = +$("alZ").value    || 99;
+  const catHrs  = +$("alCat").value  || 0;
+  const fundLim = +$("alFund").value || 99;
+  const depthLim= +$("alDepth").value|| 999;
+  const notional = c.margin * c.lev;
+
+  for(const s of state.watch){
+    const p = state.premium[s], t = state.ticker[s];
+    if(!p) continue;
+    const tk = tickerOf(s);
+
+    // 1. basis dislocation vs the symbol's own history
+    const hb = state.basisHist[s];
+    if(hb && hb.sd){
+      const basis = (p.mark-p.index)/p.index;
+      const z = (basis - hb.mean)/hb.sd;
+      if(Math.abs(z) >= zLim)
+        fire(`z:${s}`, `${tk} basis ${z>0?"premium":"discount"} ${z.toFixed(1)}σ`,
+          `${(basis*100).toFixed(3)}% vs index${sessionState().live?"":" (index frozen)"}`, "warn");
+    }
+
+    // 2. funding cost as a share of your margin
+    if(c.margin>0){
+      const costPct = Math.abs(p.funding * notional / c.margin * 100);
+      if(costPct >= fundLim)
+        fire(`f:${s}`, `${tk} funding ${pct(p.funding*100,4)}`,
+          `${costPct.toFixed(1)}% of your margin per 8h settlement`, "warn");
+    }
+
+    // 3. liquidity class degraded at your size
+    if(t){
+      const mult = t.vol/notional;
+      if(mult < 20)
+        fire(`l:${s}`, `${tk} liquidity below your size`,
+          `24h volume is only ${mult.toFixed(0)}× a ${usd(notional)} position`, "bad");
+    }
+  }
+
+  // 4. catalysts entering the window
+  for(const e of catalystList()){
+    const hrs = (e.when - Date.now())/3600e3;
+    if(hrs > 0 && hrs <= catHrs && (e.impact==="high" || e.kind==="earnings"))
+      fire(`c:${e.name}:${Math.floor(e.when/1e3)}`, `${e.name} in ${relTime(e.when-Date.now()).replace("in ","")}`,
+        (e.amc ? "After the close — index frozen, perp keeps trading. " : "") + (e.detail||""), "bad");
+  }
+
+  // 5. exit-side depth against your notional
+  const d = state.depth;
+  if(d && d.bids && d.bids.length){
+    const side = state.side==="LONG" ? d.bids : d.asks;
+    const depth10 = side.slice(0,10).reduce((a,l)=>a+(+l[0])*(+l[1]),0);
+    const consumed = notional/depth10*100;
+    if(consumed >= depthLim)
+      fire(`d:${state.sel}`, `${tickerOf(state.sel)} exit depth thin`,
+        `Your ${usd(notional)} is ${consumed.toFixed(0)}% of 10-level ${state.side==="LONG"?"bid":"ask"} depth`, "bad");
+  }
+}
+
+function renderAlerts(){
+  const on = state.notify && "Notification" in window && Notification.permission==="granted";
+  $("alertState").textContent = on ? "notifications on" : "in-page only";
+  const log = state.alertLog;
+  $("alertLog").innerHTML = log.length ? log.map(a=>{
+    const kl = a.severity==="bad" ? "t-avoid" : "t-cau";
+    return `<div style="padding:5px 0;border-bottom:1px solid rgba(30,38,53,.5)">
+      <span class="tag ${kl}">${new Date(a.t).toLocaleTimeString("en-GB",{hour12:false})}</span>
+      <b style="font-size:11.5px"> ${a.title}</b>
+      <div class="dim" style="font-size:10.5px">${a.body}</div></div>`;
+  }).join("") : `<div class="spin">no alerts yet — thresholds above are live</div>`;
 }
 
 /* ============================================= pre-trade checklist ======
@@ -661,12 +885,13 @@ function renderFunding(){
       <td class="${cls(p.funding)}">${pct(p.funding*100,4)}</td>
       <td class="${cls(-costUsd)}">${(costUsd>=0?"-":"+")+usd(Math.abs(costUsd))}</td>
       <td class="${Math.abs(costPct)>2?"warn":"dim"}">${pct(-Math.abs(costPct),2).replace("+","-")}</td>
+      <td class="${Math.abs(costPct*3)>5?"warn":"dim"}">${(costUsd>=0?"-":"+")+usd(Math.abs(costUsd*3))}</td>
       <td class="dim">${o?usd(o.value):"—"}</td>
       <td class="${o?cls(o.deltaPct):""}">${o?pct(o.deltaPct,1):"—"}</td>
       <td class="${o&&o.lsr>2?"warn":""}">${o&&o.lsr?fmt(o.lsr,2):"—"}</td></tr>`;
   }).join("");
   $("fundWrap").innerHTML = `<table><thead><tr><th>symbol</th><th>funding 8h</th>
-    <th>cost / 8h</th><th>vs margin</th><th>open int</th><th>OI Δ1h</th><th>L/S</th>
+    <th>cost / 8h</th><th>vs margin</th><th>24h carry</th><th>open int</th><th>OI Δ1h</th><th>L/S</th>
     </tr></thead><tbody>${rows}</tbody></table>`;
   bindSyms();
 }
@@ -1026,6 +1251,7 @@ async function pollMarket(){
     state.book[b.symbol] = {bid:+b.bidPrice, ask:+b.askPrice};
   }
   renderBasis(); renderGap(); renderFunding(); renderGate(); renderCalc(); renderChecklist();
+  renderSizing(); renderRS(); evaluateAlerts();
   $("lastTick").textContent = " · updated " + new Date().toLocaleTimeString("en-GB",{hour12:false});
 }
 
@@ -1081,6 +1307,7 @@ async function selectSymbol(){
   renderCalc();
   await Promise.all([ loadDepth(), loadSymbolStats(state.sel), loadNews() ]);
   renderCalc(); renderVol(); renderFunding(); renderBasis(); renderGate(); renderCatalysts(); renderChecklist();
+  renderSizing(); renderRS();
 }
 
 /* ----------------------------------------------------------------- boot */
@@ -1096,6 +1323,16 @@ async function boot(){
   ["gateFilter","gateVol","gateSearch","gateN"].forEach(id=>{
     $(id).addEventListener("input", renderGate);
   });
+  ["szAtr","szRisk","szStop"].forEach(id=>$(id).addEventListener("input", renderSizing));
+  ["alZ","alCat","alFund","alDepth"].forEach(id=>$(id).addEventListener("input", evaluateAlerts));
+  $("btnNotify").onclick = async e => {
+    e.preventDefault();
+    if(!("Notification" in window)){ alert("This browser has no Notification API."); return; }
+    const perm = await Notification.requestPermission();
+    state.notify = perm === "granted";
+    if(!state.notify) alert("Notifications blocked. Alerts still appear in the panel.");
+    renderAlerts();
+  };
   $("wlAdd").addEventListener("change", e => { addWatch(e.target.value); e.target.value=""; });
   $("btnWorker").onclick = e => {
     e.preventDefault();
@@ -1129,7 +1366,7 @@ async function boot(){
   await pollMarket();
   // stats for the watchlist, staggered so we stay well inside rate limits
   for(const s of state.watch){ await loadSymbolStats(s); }
-  renderVol(); renderFunding(); renderCalc();
+  renderVol(); renderFunding(); renderCalc(); renderSizing(); renderRS(); renderAlerts();
   await loadDepth();
   await loadNews();
   await loadEarnings();
