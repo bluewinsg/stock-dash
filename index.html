@@ -152,6 +152,7 @@ canvas{display:block;width:100%;height:44px}
       <div class="stat" id="sAtrI"><i>Liq dist ÷ 5m ATR</i><b id="oAtrI">—</b><s id="oAtrIs">—</s></div>
     </div>
 
+    <div id="venueWarn"></div>
     <div id="catalystWarn"></div>
     <div id="heatBox"></div>
     <div class="note" id="calcNote">Liquidation is isolated-margin math using the MMR you enter.
@@ -313,6 +314,10 @@ canvas{display:block;width:100%;height:44px}
         <option value="cau">caution</option><option value="avoid">avoid</option></select></div>
       <div><label>Min 24h vol (USDT)</label><input id="gateVol" type="number" value="0" step="1000000"></div>
       <div><label>Search</label><input id="gateSearch" type="text" placeholder="TSLA…"></div>
+      <div><label>Venue</label><select id="gateVenue">
+        <option value="all">all</option><option value="US" selected>US</option>
+        <option value="Korea">Korea</option><option value="Hong Kong">Hong Kong</option>
+        <option value="China">China</option></select></div>
       <div><label>Show</label><select id="gateN"><option>25</option><option selected>50</option><option>150</option></select></div>
     </div>
     <div id="gateWrap" style="margin-top:10px;max-height:460px;overflow:auto"><div class="spin">loading…</div></div>
@@ -400,8 +405,35 @@ const HOLIDAYS_2026 = ["2026-01-01","2026-01-19","2026-02-16","2026-04-03","2026
   "2026-06-19","2026-07-03","2026-09-07","2026-11-26","2026-12-25"];
 const HALFDAYS_2026 = ["2026-11-27","2026-12-24"];
 
-function etParts(d){
-  const f = new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",hour12:false,
+// Session windows and holidays per listing venue. Binance reports the venue
+// as underlyingType, so it is looked up rather than assumed — applying US
+// hours to a Korean stock reconstructs its overnight as the trading day.
+const VENUES = {
+  EQUITY:    {tz:"America/New_York", label:"US",         win:[[9.5,16]],            hol:"US"},
+  PREMARKET: {tz:"America/New_York", label:"US pre-IPO", win:[[9.5,16]],            hol:"US"},
+  KR_EQUITY: {tz:"Asia/Seoul",       label:"Korea",      win:[[9,15.5]],            hol:"KR"},
+  HK_EQUITY: {tz:"Asia/Hong_Kong",   label:"Hong Kong",  win:[[9.5,12],[13,16]],    hol:"HK"},
+  CN_EQUITY: {tz:"Asia/Shanghai",    label:"China",      win:[[9.5,11.5],[13,15]],  hol:"CN"}
+};
+// 2026 exchange holidays, from the published venue calendars.
+const VENUE_HOLIDAYS = {
+  US: HOLIDAYS_2026,
+  KR: ["2026-01-01","2026-02-16","2026-02-17","2026-02-18","2026-03-02","2026-05-01",
+       "2026-05-05","2026-05-25","2026-08-17","2026-09-24","2026-09-25","2026-10-05",
+       "2026-10-09","2026-12-25"],
+  HK: ["2026-01-01","2026-02-17","2026-02-18","2026-02-19","2026-04-03","2026-04-06",
+       "2026-04-07","2026-05-01","2026-05-25","2026-06-19","2026-07-01","2026-10-01",
+       "2026-10-19","2026-12-25"],
+  CN: ["2026-01-01","2026-01-02","2026-02-16","2026-02-17","2026-02-18","2026-02-19",
+       "2026-02-20","2026-02-23","2026-04-06","2026-05-01","2026-05-04","2026-05-05",
+       "2026-06-19","2026-09-25","2026-10-01","2026-10-02","2026-10-05","2026-10-06",
+       "2026-10-07"]
+};
+const venueOf = sym => VENUES[(state.uniMap[sym]||{}).type] || VENUES.EQUITY;
+
+
+function etParts(d, tz){
+  const f = new Intl.DateTimeFormat("en-US",{timeZone:tz||"America/New_York",hour12:false,
     year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",
     second:"2-digit",weekday:"short"});
   const p = {}; for(const x of f.formatToParts(d)) p[x.type]=x.value;
@@ -411,27 +443,31 @@ function etParts(d){
            time:`${p.hour}:${p.minute}:${p.second}` };
 }
 function sessionState(){
-  const e = etParts(new Date());
+  const v = venueOf(state.sel);
+  const e = etParts(new Date(), v.tz);
   const weekend = (e.dow==="Sat"||e.dow==="Sun");
-  const holiday = HOLIDAYS_2026.includes(e.date);
-  const half    = HALFDAYS_2026.includes(e.date);
-  const close   = half ? 13*60 : 16*60;
+  const hols    = VENUE_HOLIDAYS[v.hol] || [];
+  const holiday = hols.includes(e.date);
+  const half    = v.hol==="US" && HALFDAYS_2026.includes(e.date);
+  const openH   = v.win[0][0], closeH = v.win[v.win.length-1][1];
+  const close   = half ? 13*60 : closeH*60;
   let s;
+  const inAny = v.win.some(([lo,hi]) => e.mins >= lo*60 && e.mins < (half&&hi===closeH?13:hi)*60);
   if(weekend)        s = {k:"WEEKEND", live:false};
   else if(holiday)   s = {k:"HOLIDAY", live:false};
-  else if(e.mins< 240)  s = {k:"CLOSED",     live:false};
-  else if(e.mins< 570)  s = {k:"PRE-MARKET", live:true};
-  else if(e.mins<close) s = {k:"REGULAR",    live:true};
-  else if(e.mins< 1200) s = {k:"AFTER-HRS",  live:true};
+  else if(inAny)                       s = {k:"REGULAR",    live:true};
+  else if(e.mins >= openH*60 && e.mins < close) s = {k:"LUNCH", live:false};
+  else if(e.mins >= (openH-5.5)*60 && e.mins < openH*60) s = {k:"PRE-MARKET", live:true};
+  else if(e.mins >= close && e.mins < close + 240) s = {k:"AFTER-HRS", live:true};
   else               s = {k:"CLOSED",     live:false};
 
   // next transition
   let nextMin, nextLbl;
-  const marks = [[240,"pre-market"],[570,"NYSE open"],[close,"NYSE close"],[1200,"post close"]];
+  const marks = [[(openH-5.5)*60,"pre-market"],[openH*60,"open"],[close,"close"],[close+240,"post close"]];
   if(weekend||holiday){ nextMin=null; nextLbl="mkt shut"; }
   else{
     const nx = marks.find(m => e.mins < m[0]);
-    if(nx){ nextMin=nx[0]; nextLbl=nx[1]; } else { nextMin=240+1440; nextLbl="pre-market"; }
+    if(nx){ nextMin=nx[0]; nextLbl=nx[1]; } else { nextMin=(openH-5.5)*60+1440; nextLbl="pre-market"; }
   }
   const cd = nextMin===null ? null : (nextMin*60) - (e.mins*60 + e.ss);
   return {...s, et:e, nextLbl, cd, half};
@@ -446,8 +482,11 @@ function tickClock(){
   const sgt = new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Singapore",hour12:false,
     hour:"2-digit",minute:"2-digit",second:"2-digit"}).format(now);
   const S = sessionState();
+  const v = venueOf(state.sel);
   $("clkSGT").textContent = sgt;
   $("clkET").textContent  = S.et.time;
+  const lbl = document.querySelector("#clkET").previousElementSibling;
+  if(lbl) lbl.textContent = v.label === "US" ? "New York" : v.label;
   const b = $("sessBadge");
   b.textContent = S.k + (S.half ? " ½day" : "");
   b.className = "badge " + (S.k==="REGULAR"?"b-rth":S.k==="PRE-MARKET"?"b-pre":
@@ -520,6 +559,19 @@ function calc(){
 }
 
 /* ------------------------------------------------------------ renderers */
+function renderVenueWarn(){
+  const v = venueOf(state.sel);
+  const box = $("venueWarn");
+  if(!box) return;
+  if(v.hol === "US"){ box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="alertbox" style="background:rgba(255,176,32,.08);
+    border-color:rgba(255,176,32,.4);color:#ffdca8">
+    <b>${tickerOf(state.sel)} lists in ${v.label}.</b> The session clock and gap board follow
+    ${v.label} hours, but the catalyst radar carries <i>US</i> macro releases — CPI and payrolls
+    do not set this symbol's session. Liquidity, depth, funding and liquidation are venue-neutral
+    and remain correct.</div>`;
+}
+
 function renderCalc(){
   const r = calc();
   $("calcSym").textContent = state.sel;
@@ -564,6 +616,7 @@ function renderCalc(){
       loss at ${usd(c.margin)}.</div>`;
   }
   $("heatBox").innerHTML = h;
+  renderVenueWarn();
 }
 
 /* ============================================== overnight gap stats =====
@@ -1178,6 +1231,7 @@ function gateClass(volume, depthProxy, notional){
 function renderGate(){
   const notional = state.cfg.margin * state.cfg.lev;
   const f = $("gateFilter").value, minV = +$("gateVol").value||0;
+  const ven = $("gateVenue").value;
   const q = ($("gateSearch").value||"").toUpperCase();
   const n = +$("gateN").value||50;
 
@@ -1190,6 +1244,8 @@ function renderGate(){
   }).filter(Boolean);
 
   rows = rows.filter(r => r.vol>=minV && (!q || r.sym.includes(q)) &&
+    (ven==="all" || ((VENUES[r.type]||{}).label||"").startsWith(ven) ||
+      (ven==="US" && ((VENUES[r.type]||{}).label||"").startsWith("US"))) &&
     (f==="all" || (f==="ok"&&r.rank===2) || (f==="cau"&&r.rank===1) || (f==="avoid"&&r.rank===0)));
   rows.sort((a,b)=>b.vol-a.vol);
 
@@ -1208,11 +1264,11 @@ function renderGate(){
     <td>${usd(r.vol)}</td>
     <td class="${r.spread>0.05?"warn":"dim"}">${isFinite(r.spread)?r.spread.toFixed(3)+"%":"—"}</td>
     <td class="dim">${(r.vol/notional).toFixed(0)}×</td>
-    <td class="dim">${r.type==="PREMARKET"?"pre-IPO":"equity"}</td>
+    <td class="dim">${(VENUES[r.type]||{}).label || "—"}</td>
     <td>${state.watch.includes(r.sym) ? '<span class="dim">on list</span>'
       : `<a href="#" class="wlAddBtn" data-s="${r.sym}" style="text-decoration:none">+ watch</a>`}</td></tr>`).join("");
   $("gateWrap").innerHTML = `<table><thead><tr><th>symbol</th><th>gate</th><th>last</th><th>24h</th>
-    <th>volume</th><th>spread</th><th>vol ÷ your size</th><th>class</th><th></th>
+    <th>volume</th><th>spread</th><th>vol ÷ your size</th><th>venue</th><th></th>
     </tr></thead><tbody>${body}</tbody></table>`;
   bindSyms();
   document.querySelectorAll(".wlAddBtn").forEach(el=>{
@@ -1423,13 +1479,17 @@ function renderCatalystWarning(list){
 async function loadUniverse(){
   const ei = await get("/fapi/v1/exchangeInfo");
   state.universe = ei.symbols
-    .filter(s => (s.underlyingType==="EQUITY"||s.underlyingType==="PREMARKET") && s.status==="TRADING")
-    .map(s => ({symbol:s.symbol, type:s.underlyingType, pricePrecision:s.pricePrecision}));
+    .filter(s => VENUES[s.underlyingType] && s.status==="TRADING")
+    .map(s => ({symbol:s.symbol, type:s.underlyingType, pricePrecision:s.pricePrecision,
+                venue:(VENUES[s.underlyingType]||{}).label}));
   state.universe.forEach(u => state.uniMap[u.symbol]=u);
   const dl = $("wlOptions");
   if(dl) dl.innerHTML = state.universe.map(u=>`<option value="${u.symbol}">`).join("");
-  $("uniInfo").textContent = `${state.universe.length} US equity perps tracked · `
-    + `basis, depth and liquidation math on live Binance data`;
+  const byVenue = {};
+  state.universe.forEach(u => { byVenue[u.venue] = (byVenue[u.venue]||0)+1; });
+  $("uniInfo").textContent = `${state.universe.length} equity perps · `
+    + Object.entries(byVenue).map(([k,v]) => `${v} ${k}`).join(" · ")
+    + ` · basis, depth and liquidation math on live Binance data`;
 }
 
 async function pollMarket(){
@@ -1525,7 +1585,7 @@ async function boot(){
   $("bShort").onclick = ()=>{ state.side="SHORT"; setSeg(); saveCfg(); renderCalc(); renderDepth(); renderChecklist(); };
   $("bIso").onclick   = ()=>{ state.mode="ISOLATED"; setSeg(); saveCfg(); renderCalc(); renderChecklist(); };
   $("bCross").onclick = ()=>{ state.mode="CROSS";    setSeg(); saveCfg(); renderCalc(); renderChecklist(); };
-  ["gateFilter","gateVol","gateSearch","gateN"].forEach(id=>{
+  ["gateFilter","gateVol","gateSearch","gateN","gateVenue"].forEach(id=>{
     $(id).addEventListener("input", renderGate);
   });
   ["szAtr","szRisk","szStop"].forEach(id=>$(id).addEventListener("input", renderSizing));
