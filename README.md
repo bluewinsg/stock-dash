@@ -81,7 +81,7 @@ The point of the catalyst data is not a headline list — it's a banner on the p
 combines a scheduled event with *your* actual exposure:
 
 > **NVDA earnings in 4d 6h** (amc). It prints after the 16:00 ET close, when the cash index is
-> frozen but the perp keeps trading. You are LONG 20x on NVDA, liq 4.00% away. Largest single-day
+> frozen but the perp keeps trading. You are LONG 5x on NVDA, liq 19.22% away. Largest single-day
 > range in the last 90 sessions: X%.
 
 `amc` earnings are called out specifically: they land while the cash market is shut, so the perp
@@ -92,8 +92,11 @@ reprices against a frozen index with no open to wait for and no circuit breaker.
 Account size, margin per trade, leverage, MMR and max concurrent positions are set in the UI and
 persist to `localStorage`.
 
-Set **MMR** from the real risk-limit tier for each symbol (Binance Futures → leverage slider →
-Risk Limit). The 1.0% default is a placeholder; the tier value makes the liquidation price exact.
+Leverage defaults to **5x**. **MMR** defaults to **0.78%**, which is not a guess: it was
+back-solved from a live isolated SPCXUSDT position and reproduces Binance's own reported
+liquidation price to within a cent. Maintenance margin is tier-dependent, so override it from
+the Risk Limit table (Binance Futures → leverage slider → Risk Limit) for other symbols or
+much larger sizes.
 
 ## Endpoints used
 

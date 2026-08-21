@@ -132,7 +132,7 @@ canvas{display:block;width:100%;height:44px}
       <div><label>Margin / trade</label><input id="iMargin" type="number" value="1500" step="50"></div>
     </div>
     <div class="row r3">
-      <div><label>Leverage</label><input id="iLev" type="number" value="20" step="1" min="1" max="25"></div>
+      <div><label>Leverage</label><input id="iLev" type="number" value="5" step="1" min="1" max="25"></div>
       <div><label>MMR %</label><input id="iMmr" type="number" value="0.78" step="0.01"></div>
       <div><label>Max open</label><input id="iMax" type="number" value="4" step="1" min="1"></div>
     </div>
@@ -223,7 +223,7 @@ canvas{display:block;width:100%;height:44px}
 
   <!-- ============ VOLATILITY ============ -->
   <div class="card c7">
-    <h2>Volatility &amp; survivability <em>can 20x survive a normal day?</em></h2>
+    <h2>Volatility &amp; survivability <em>does your leverage survive a normal day?</em></h2>
     <div id="rsStrip" style="margin-bottom:9px"></div>
     <div id="volWrap"><div class="spin">loading…</div></div>
     <div class="note">"Liq-range days" counts sessions in the last 90 whose intraday range alone exceeded your
@@ -244,7 +244,7 @@ canvas{display:block;width:100%;height:44px}
     <h2>Funding &amp; open interest <em id="fundCd">—</em></h2>
     <div id="fundWrap"><div class="spin">loading…</div></div>
     <div class="note">TradFi perps settle funding every 8h, capped at ±1.00%, interest component 0%.
-      At 20x a 1% funding print is 20% of your margin — carry is not a rounding error at this leverage.</div>
+      A 1% funding print costs leverage × 1% of your margin — at 20x that is a fifth of it, so carry is not a rounding error.</div>
   </div>
 
   <!-- ============ SIZING HELPER ============ -->
@@ -339,14 +339,14 @@ canvas{display:block;width:100%;height:44px}
    ========================================================================= */
 
 const API = "https://fapi.binance.com";
-const LS  = "usperp.cfg.v2";   // bumped: v1 saved a 1500 default account
+const LS  = "usperp.cfg.v3";   // bumped: v2 saved lev:20 as the default
 
 // mmr 0.78 is not a guess: it was back-solved from a live isolated SPCXUSDT
 // position and reproduces Binance's own reported liquidation price to within
 // a cent. It is still tier-dependent — maintenance margin steps up with
 // notional and differs per symbol — so override it from the Risk Limit table
 // when trading a different name or a much larger size.
-const DEFAULTS = { acct:10000, margin:1500, lev:20, mmr:0.78, max:4, fee:0.05 };
+const DEFAULTS = { acct:10000, margin:1500, lev:5, mmr:0.78, max:4, fee:0.05 };
 
 // Ships as the default so a new device/browser works with no setup. This is
 // not a credential — the Finnhub key lives inside the worker and is never
@@ -749,7 +749,7 @@ document.addEventListener("visibilitychange", ()=>{
      leverage  -> sets liquidation DISTANCE (size is irrelevant to it)
      stop+risk -> sets position SIZE (leverage is irrelevant to it)
 
-   At 20x liquidation sits ~1/20 - mmr away regardless of whether the
+   Liquidation sits ~1/leverage - mmr away regardless of whether the
    position is $100 or $100k. So "size down to be safer" does nothing for
    liquidation risk; only cutting leverage does.
    ====================================================================== */
