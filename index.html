@@ -324,6 +324,17 @@ canvas{display:block;width:100%;height:44px}
       the cash market has not.</div>
   </div>
 
+  <!-- ============ EVENT TIMELINE ============ -->
+  <div class="card c12">
+    <h2>Event timeline — next 24h <em id="tlInfo">—</em></h2>
+    <div id="tlWrap"><div class="spin">loading…</div></div>
+    <div class="note">Everything scheduled in the next 24 hours on one strip: funding settlements
+      (every 8h), the cash session of the selected symbol's venue (green band — the index is live
+      inside it and frozen everywhere else), high-impact macro prints and watchlist earnings.
+      <b>amc</b> earnings sit in the frozen zone by construction — the combination that gaps a perp
+      with no underlying to check it. Axis times are SGT with New York beneath.</div>
+  </div>
+
   <!-- ============ SCREENER ============ -->
   <div class="card c12">
     <h2>Screener — all equity perps <span style="display:flex;gap:8px;align-items:center">
@@ -1379,6 +1390,134 @@ function renderDepth(){
   }
 }
 
+/* ==================================================== event timeline ====
+   One 24h strip merging four clocks that otherwise live in different
+   panels (or nowhere): 8h funding settlements, the selected venue's cash
+   session (= when the index is live), macro prints and earnings. All of
+   it derives from state already loaded; sessions come from the same venue
+   windows and holiday calendars the session badge uses.
+   ====================================================================== */
+function tzOffsetMs(tz){
+  const now = new Date();
+  const loc = new Date(now.toLocaleString("en-US",{timeZone:tz}));
+  const utc = new Date(now.toLocaleString("en-US",{timeZone:"UTC"}));
+  return utc - loc;
+}
+function tzToDate(tz, dateStr, hourFloat){
+  const [y,m,d] = dateStr.split("-").map(Number);
+  const hh = Math.floor(hourFloat), mm = Math.round((hourFloat-hh)*60);
+  return new Date(Date.UTC(y,m-1,d,hh,mm) + tzOffsetMs(tz));
+}
+
+function sessionBands(sym, horizonMs){
+  const v = venueOf(sym);
+  const hols = VENUE_HOLIDAYS[v.hol] || [];
+  const now = Date.now(), out = [];
+  // -1 covers the case where the venue's local date is behind SGT's
+  for(let off=-1; off<=2; off++){
+    const e = etParts(new Date(now + off*864e5), v.tz);
+    if(e.dow==="Sat"||e.dow==="Sun"||hols.includes(e.date)) continue;
+    const half = v.hol==="US" && HALFDAYS_2026.includes(e.date);
+    for(const [lo,hi] of v.win){
+      const closeH = (half && hi===v.win[v.win.length-1][1]) ? 13 : hi;
+      const o = tzToDate(v.tz, e.date, lo), c = tzToDate(v.tz, e.date, closeH);
+      if(+c <= now || +o >= now+horizonMs) continue;
+      out.push({open:o, close:c});
+    }
+  }
+  return out;
+}
+
+function timelineEvents(){
+  const now = Date.now(), H = 24*3600e3;
+  const evs = [];
+  const p = state.premium[state.sel];
+  if(p && p.nextFundingTime > now){
+    for(let i=0;i<3;i++){
+      const t = p.nextFundingTime + i*8*3600e3;
+      if(t < now+H) evs.push({when:new Date(t), name:"Funding", kind:"funding",
+        detail:"last print "+pct(p.funding*100,4)});
+    }
+  }
+  const v = venueOf(state.sel);
+  for(const b of sessionBands(state.sel, H)){
+    if(+b.open  > now)          evs.push({when:b.open,  name:v.label+" open",  kind:"session"});
+    if(+b.close > now && +b.close < now+H) evs.push({when:b.close, name:v.label+" close", kind:"session"});
+  }
+  for(const e of catalystList()){
+    if(+e.when < now+H) evs.push({when:e.when, name:e.name, kind:e.kind,
+      detail:e.detail, impact:e.impact, amc:e.amc});
+  }
+  return evs.sort((a,b)=>a.when-b.when);
+}
+
+const TL_KIND = {funding:{c:"var(--blu)", lane:0}, session:{c:"var(--grn)", lane:1},
+                 macro:{c:"var(--amb)", lane:2}, earnings:{c:"var(--red)", lane:2}};
+const tlTime = (d,tz)=>new Intl.DateTimeFormat("en-GB",{timeZone:tz,
+  hour:"2-digit",minute:"2-digit",hour12:false}).format(d);
+
+function renderTimeline(){
+  const box = $("tlWrap"); if(!box) return;
+  const now = Date.now(), H = 24*3600e3;
+  const evs = timelineEvents();
+  const bands = sessionBands(state.sel, H);
+  const xPct = t => Math.max(0, Math.min(100, (t-now)/H*100));
+
+  $("tlInfo").textContent = evs.length
+    ? `next: ${evs[0].name} ${relTime(+evs[0].when-now)} · ${tickerOf(state.sel)}'s venue clock`
+    : "nothing scheduled in the next 24h";
+
+  const bandHtml = bands.map(b=>{
+    const l = xPct(+b.open), r = xPct(+b.close);
+    return `<div style="position:absolute;left:${l}%;width:${r-l}%;top:0;bottom:0;
+      background:rgba(38,208,124,.10);border-left:1px solid rgba(38,208,124,.35);
+      border-right:1px solid rgba(38,208,124,.35)"></div>`;
+  }).join("");
+
+  const dots = evs.map(e=>{
+    const k = TL_KIND[e.kind]||TL_KIND.macro;
+    const tip = `${e.name} · ${tlTime(e.when,"Asia/Singapore")} SGT / ${tlTime(e.when,"America/New_York")} ET`
+      + (e.detail ? ` · ${e.detail}` : "");
+    return `<div title="${tip}" style="position:absolute;left:${xPct(+e.when)}%;
+      top:${7+k.lane*16}px;width:8px;height:8px;border-radius:50%;background:${k.c};
+      transform:translateX(-50%);cursor:default;box-shadow:0 0 0 2px var(--panel2)"></div>`;
+  }).join("");
+
+  const ticks = [...Array(7)].map((_,i)=>{
+    const t = new Date(now + i*4*3600e3);
+    const tx = i===0 ? "0" : i===6 ? "-100%" : "-50%";
+    return `<div style="position:absolute;left:${i/6*100}%;transform:translateX(${tx});
+      text-align:center;font-size:9.5px;line-height:1.3">
+      <div>${tlTime(t,"Asia/Singapore")}</div>
+      <div style="color:var(--dim2)">${tlTime(t,"America/New_York")}</div></div>`;
+  }).join("");
+
+  const chips = evs.slice(0,8).map(e=>{
+    const k = TL_KIND[e.kind]||TL_KIND.macro;
+    return `<span style="border:1px solid var(--line);border-radius:4px;padding:3px 8px;
+      font-size:10.5px;white-space:nowrap">
+      <span style="color:${k.c}">●</span> ${e.name} · ${tlTime(e.when,"Asia/Singapore")} SGT ·
+      <span class="dim">${relTime(+e.when-now)}</span>
+      ${e.amc?' <span class="tag t-avoid">AMC</span>':""}</span>`;
+  }).join("");
+
+  box.innerHTML = `
+    <div style="position:relative;height:56px;background:var(--panel2);
+      border:1px solid var(--line);border-radius:6px;overflow:hidden">
+      ${bandHtml}${dots}
+      <div style="position:absolute;left:0;top:0;bottom:0;border-left:2px solid var(--fg);opacity:.35"></div>
+    </div>
+    <div style="position:relative;height:26px;margin-top:4px">${ticks}</div>
+    <div style="display:flex;gap:14px;font-size:10px;color:var(--dim);margin:2px 0 8px">
+      <span><span style="color:var(--blu)">●</span> funding</span>
+      <span><span style="color:var(--grn)">●</span> session / <span style="color:var(--grn)">▮</span> index live</span>
+      <span><span style="color:var(--amb)">●</span> macro</span>
+      <span><span style="color:var(--red)">●</span> earnings</span>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">${chips ||
+      '<span class="dim" style="font-size:11px">nothing scheduled in the next 24 hours</span>'}</div>`;
+}
+
 /* ========================================================= screener =====
    Four ranked scans over every listed equity perp, computed purely from
    state the poll loop already maintains. "Flow" deserves a caveat that is
@@ -1820,7 +1959,7 @@ async function selectSymbol(){
                       loadGapStats(state.sel) ]);
   renderGapStats(); renderChart();
   renderCalc(); renderVol(); renderFunding(); renderBasis(); renderGate(); renderCatalysts(); renderChecklist();
-  renderSizing(); renderRS();
+  renderSizing(); renderRS(); renderTimeline();
 }
 
 /* ----------------------------------------------------------------- boot */
@@ -1902,11 +2041,11 @@ async function boot(){
   renderChart();
   await loadNews();
   await loadEarnings();
-  renderCatalysts();
+  renderCatalysts(); renderTimeline();
 
   setInterval(pollMarket, 10000);
   setInterval(loadDepth, 10000);
-  setInterval(()=>{ renderCatalysts(); renderChecklist(); }, 30000);          // countdowns + warning band
+  setInterval(()=>{ renderCatalysts(); renderChecklist(); renderTimeline(); }, 30000);  // countdowns + warning band + strip
   setInterval(loadNews, 180000);                // worker caches at 120s anyway
   setInterval(()=>{ loadSymbolStats(state.sel).then(()=>{renderVol();renderFunding();renderCalc();}); }, 60000);
 }
