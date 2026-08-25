@@ -95,6 +95,10 @@ input:focus,select:focus{border-color:var(--blu)}
   padding:9px 11px;font-size:11.5px;line-height:1.5;margin-top:9px;color:#a8e9c8}
 
 /* ---------- bars / meters ---------- */
+.scrGrid{display:grid;gap:12px;grid-template-columns:repeat(4,1fr)}
+@media(max-width:1200px){.scrGrid{grid-template-columns:1fr 1fr}}
+@media(max-width:640px){.scrGrid{grid-template-columns:1fr}}
+.scrGrid>div{min-width:0}
 .meter{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:5px;border:1px solid var(--line)}
 .meter div{height:100%;transition:width .3s}
 canvas{display:block;width:100%;height:44px}
@@ -320,6 +324,32 @@ canvas{display:block;width:100%;height:44px}
       the cash market has not.</div>
   </div>
 
+  <!-- ============ SCREENER ============ -->
+  <div class="card c12">
+    <h2>Screener — all equity perps <span style="display:flex;gap:8px;align-items:center">
+      <select id="scrVol" style="width:auto;padding:3px 6px;font-size:11px">
+        <option value="0">any volume</option>
+        <option value="1000000" selected>≥ $1M / 24h</option>
+        <option value="5000000">≥ $5M / 24h</option>
+        <option value="size">tradable at your size</option>
+      </select>
+      <select id="scrVenue" style="width:auto;padding:3px 6px;font-size:11px">
+        <option value="all">all venues</option><option value="US" selected>US</option>
+        <option value="Korea">Korea</option><option value="Hong Kong">Hong Kong</option>
+        <option value="China">China</option>
+      </select>
+      <em id="scrInfo">—</em></span></h2>
+    <div class="scrGrid" id="scrWrap"><div class="spin">loading…</div></div>
+    <div class="note">Four independent scans of every listed equity perp, ranked from data the page
+      already polls — no extra API traffic. <b>Movers</b> is 24h change. <b>Funding</b> shows the widest
+      prints and what each would pay or cost <i>your</i> notional at the next 8h settlement (long
+      convention: red pays, green collects). <b>Dislocation</b> is mark vs index — off-hours that is
+      drift from a stale cash print, not live basis. <b>Live flow</b> is volume actually traded in the
+      last ~15 minutes against the symbol's own 24h pace; the rolling-window arithmetic makes it a
+      lower bound, so a high reading is real. Flow needs ~15 minutes of page uptime to calibrate.
+      Click any symbol to load it into every panel above.</div>
+  </div>
+
   <!-- ============ LIQUIDITY GATE ============ -->
   <div class="card c12">
     <h2>Liquidity gate — all US equity perps <em id="gateInfo">—</em></h2>
@@ -394,6 +424,7 @@ const state = {
   alertLog:[],          // most recent alerts, newest first (persisted)
   priceRules:[],        // [{sym, op, px, armed, prev}] user price levels (persisted)
   priceHist:{},         // symbol -> [{t,p}] rolling ~6 min of marks, for the 5m-move rule
+  volHist:{},           // symbol -> [{t,vol}] rolling ~20 min of 24h volume, for screener flow
   voice:false,          // speech alerts opted in (persisted)
   gapStats:{},          // symbol -> overnight gap distribution
   chart:null, chartRO:null,
@@ -1348,6 +1379,83 @@ function renderDepth(){
   }
 }
 
+/* ========================================================= screener =====
+   Four ranked scans over every listed equity perp, computed purely from
+   state the poll loop already maintains. "Flow" deserves a caveat that is
+   also its defence: quoteVolume is a rolling 24h sum, so (now − 15m ago)
+   understates true traded flow by whatever rolled off the back of the
+   window. The reading is a lower bound — noise can hide activity, it
+   cannot invent it — so a symbol printing 4× its own pace really is busy.
+   ====================================================================== */
+function scrRows(){
+  const minSel = $("scrVol").value, ven = $("scrVenue").value;
+  const notional = state.cfg.margin * state.cfg.lev;
+  const minVol = minSel==="size" ? notional*100 : +minSel;
+  return state.universe.map(u=>{
+    const t = state.ticker[u.symbol], p = state.premium[u.symbol];
+    if(!t || !p || t.vol < minVol) return null;
+    const label = (VENUES[u.type]||{}).label||"";
+    if(ven!=="all" && !label.startsWith(ven)) return null;
+    return {sym:u.symbol, t, p, basis:(p.mark-p.index)/p.index*100};
+  }).filter(Boolean);
+}
+
+function flowOf(sym){
+  const h = state.volHist[sym], t = state.ticker[sym];
+  if(!h || h.length<2 || !t) return null;
+  const now = Date.now();
+  // prefer a ~15-minute-old sample; fall back to the oldest once ≥4 min up
+  const ref = h.find(x => now - x.t >= 14*60*1000) ||
+              (now - h[0].t >= 4*60*1000 ? h[0] : null);
+  if(!ref) return null;
+  const mins = (now - ref.t)/60000;
+  const flow = Math.max(0, t.vol - ref.vol);
+  const expected = t.vol * mins/(24*60);   // the symbol's own 24h pace
+  return expected>0 ? {ratio:flow/expected, flow, mins} : null;
+}
+
+function renderScreener(){
+  const box = $("scrWrap");
+  if(!box) return;
+  const rows = scrRows();
+  $("scrInfo").textContent = `${rows.length} of ${state.universe.length} scanned`;
+  if(!rows.length){ box.innerHTML = `<div class="spin">no symbols pass the filter</div>`; return; }
+
+  const mini = (title, body) => `<div>
+    <div style="font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.8px;margin-bottom:5px">${title}</div>
+    <table><tbody>${body}</tbody></table></div>`;
+  const empty = msg => `<tr><td class="dim" style="text-align:left;white-space:normal">${msg}</td></tr>`;
+
+  const movers = rows.slice().sort((a,b)=>Math.abs(b.t.chg)-Math.abs(a.t.chg)).slice(0,8)
+    .map(r=>`<tr><td class="sym" data-s="${r.sym}">${tickerOf(r.sym)}</td>
+      <td class="${cls(r.t.chg)}">${pct(r.t.chg)}</td><td class="dim">${usd(r.t.vol)}</td></tr>`).join("");
+
+  const notional = state.cfg.margin * state.cfg.lev;
+  const funding = rows.slice().sort((a,b)=>Math.abs(b.p.funding)-Math.abs(a.p.funding)).slice(0,8)
+    .map(r=>{
+      const cost = r.p.funding * notional;   // long convention, as in the funding panel
+      return `<tr><td class="sym" data-s="${r.sym}">${tickerOf(r.sym)}</td>
+      <td class="${cls(r.p.funding)}">${pct(r.p.funding*100,4)}</td>
+      <td class="${cost>0?"dn":"up"}">${(cost>=0?"-":"+")+usd(Math.abs(cost))}</td></tr>`;}).join("");
+
+  const dislo = rows.slice().sort((a,b)=>Math.abs(b.basis)-Math.abs(a.basis)).slice(0,8)
+    .map(r=>`<tr><td class="sym" data-s="${r.sym}">${tickerOf(r.sym)}</td>
+      <td class="${cls(r.basis)}">${pct(r.basis,2)}</td><td class="dim">${usd(r.t.vol)}</td></tr>`).join("");
+
+  const flows = rows.map(r=>({r, f:flowOf(r.sym)})).filter(x=>x.f && x.f.flow>0)
+    .sort((a,b)=>b.f.ratio-a.f.ratio).slice(0,8)
+    .map(x=>`<tr><td class="sym" data-s="${x.r.sym}">${tickerOf(x.r.sym)}</td>
+      <td class="${x.f.ratio>=3?"warn":""}">${x.f.ratio.toFixed(1)}×</td>
+      <td class="dim">${usd(x.f.flow)} / ${Math.round(x.f.mins)}m</td></tr>`).join("");
+
+  box.innerHTML =
+    mini("Movers · 24h", movers) +
+    mini("Funding extremes · next 8h", funding) +
+    mini("Dislocation · mark vs index", dislo) +
+    mini("Live flow · vs own pace", flows || empty("calibrating — needs a few minutes of uptime"));
+  bindSyms();
+}
+
 function gateClass(volume, depthProxy, notional){
   if(volume < notional*20)  return ["AVOID","t-avoid",0];
   if(volume < notional*100) return ["CAUTION","t-cau",1];
@@ -1645,7 +1753,14 @@ async function pollMarket(){
     h.push({t:now, p:p.mark});
     while(h.length && now - h[0].t > 6*60*1000) h.shift();
   }
-  renderBasis(); renderGap(); renderFunding(); renderGate(); renderCalc(); renderChecklist();
+  // rolling 24h-volume samples for the whole universe — feeds screener flow
+  for(const u of state.universe){
+    const t = state.ticker[u.symbol]; if(!t || !isFinite(t.vol)) continue;
+    const h = state.volHist[u.symbol] || (state.volHist[u.symbol] = []);
+    h.push({t:now, vol:t.vol});
+    while(h.length && now - h[0].t > 20*60*1000) h.shift();
+  }
+  renderBasis(); renderScreener(); renderGap(); renderFunding(); renderGate(); renderCalc(); renderChecklist();
   renderSizing(); renderRS(); evaluateAlerts();
   $("lastTick").textContent = " · updated " + new Date().toLocaleTimeString("en-GB",{hour12:false});
 }
@@ -1722,6 +1837,7 @@ async function boot(){
     $(id).addEventListener("input", renderGate);
   });
   ["szAtr","szRisk","szStop"].forEach(id=>$(id).addEventListener("input", renderSizing));
+  ["scrVol","scrVenue"].forEach(id=>$(id).addEventListener("input", renderScreener));
   $("chartItv").addEventListener("change", renderChart);
   ["alZ","alCat","alFund","alDepth","alMove"].forEach(id=>$(id).addEventListener("input", evaluateAlerts));
   $("prAdd").onclick = e => { e.preventDefault(); addPriceRule(); };
