@@ -307,11 +307,14 @@ canvas{display:block;width:100%;height:44px}
 
   <!-- ============ CATALYST RADAR ============ -->
   <div class="card c6">
-    <h2>Catalyst radar <em id="catNext">—</em></h2>
+    <h2>Catalyst radar — beyond 24h <em id="catNext">—</em></h2>
     <div id="catWrap"><div class="spin">loading…</div></div>
-    <div class="note">Scheduled events only — things you can see coming. Macro dates are from the BLS and
-      Federal Reserve schedules; earnings come from your worker. <b>amc</b> prints land after the 16:00 ET
-      close, while the index is frozen and the perp still trades — that combination is why the row turns red.</div>
+    <div class="note">The forward book: everything scheduled <i>past</i> the timeline strip's 24-hour
+      window, so the two panels don't repeat each other. Macro dates are from the BLS and Federal
+      Reserve schedules; earnings come from your worker. <b>amc</b> prints land after the 16:00 ET
+      close, while the index is frozen and the perp still trades — flagged here so a position isn't
+      planned into one. Anything closer than 24h lives on the timeline above, and the red warning in
+      the Position card still fires regardless of which panel an event sits in.</div>
   </div>
 
   <!-- ============ NEWS ============ -->
@@ -1787,13 +1790,24 @@ function catalystList(){
 function renderCatalysts(){
   const list = catalystList();
   if(!list.length){
-    $("catWrap").innerHTML = `<div class="spin">no scheduled catalysts loaded</div>`; return;
+    $("catWrap").innerHTML = `<div class="spin">no scheduled catalysts loaded</div>`;
+    renderCatalystWarning(list);
+    return;
   }
-  $("catNext").textContent = list[0].name + " " + relTime(list[0].when - Date.now());
-  const rows = list.slice(0,12).map(e=>{
+  // The next-24h window is the timeline strip's job; this panel is the
+  // forward book. The position warning below still evaluates the full list.
+  const H = 24*3600e3;
+  const far = list.filter(e => e.when - Date.now() >= H);
+  if(!far.length){
+    $("catNext").textContent = "—";
+    $("catWrap").innerHTML = `<div class="spin">nothing scheduled beyond 24h — the near book is on the timeline above</div>`;
+    renderCatalystWarning(list);
+    return;
+  }
+  $("catNext").textContent = far[0].name + " " + relTime(far[0].when - Date.now());
+  const rows = far.slice(0,12).map(e=>{
     const dt = e.when - Date.now();
-    const soon = dt < 60*60*1000, today = dt < 24*60*60*1000;
-    const kl = e.impact==="high" ? (soon?"dn":today?"warn":"") : "dim";
+    const kl = e.impact==="high" ? "" : "dim";
     const et = new Intl.DateTimeFormat("en-GB",{timeZone:"America/New_York",
       month:"short",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).format(e.when);
     const sgt = new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Singapore",
