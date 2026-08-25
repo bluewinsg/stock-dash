@@ -66,6 +66,9 @@ label{display:block;font-size:10px;color:var(--dim);text-transform:uppercase;let
 input,select{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--fg);
   border-radius:5px;padding:6px 8px;font:12px var(--mono);outline:none}
 input:focus,select:focus{border-color:var(--blu)}
+.btn{background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:5px;
+  padding:6px 10px;font:11px var(--mono);cursor:pointer;letter-spacing:.5px;white-space:nowrap}
+.btn:hover{border-color:var(--blu);color:var(--blu)}
 .row{display:grid;gap:8px;margin-bottom:9px}
 .r2{grid-template-columns:1fr 1fr}.r3{grid-template-columns:1fr 1fr 1fr}.r4{grid-template-columns:repeat(4,1fr)}
 .seg{display:flex;gap:0;border:1px solid var(--line);border-radius:5px;overflow:hidden}
@@ -272,18 +275,30 @@ canvas{display:block;width:100%;height:44px}
 
   <!-- ============ ALERTS ============ -->
   <div class="card c6">
-    <h2>Alerts <span><a href="#" id="btnNotify" style="font-size:10px;text-decoration:none">enable notifications</a>
+    <h2>Alerts <span>
+      <a href="#" id="btnVoice" style="font-size:10px;text-decoration:none">voice off</a>
+      <a href="#" id="btnNotify" style="font-size:10px;text-decoration:none;margin-left:8px">enable notifications</a>
       <em id="alertState" style="margin-left:8px">off</em></span></h2>
-    <div class="row r4">
+    <div class="row" style="grid-template-columns:repeat(5,1fr)">
       <div><label>|z| basis &gt;</label><input id="alZ" type="number" value="2" step="0.5"></div>
       <div><label>Catalyst &lt; hrs</label><input id="alCat" type="number" value="4" step="1"></div>
       <div><label>Funding &gt; % margin</label><input id="alFund" type="number" value="2" step="0.5"></div>
       <div><label>Book consumed &gt;%</label><input id="alDepth" type="number" value="100" step="10"></div>
+      <div><label>5m move &gt; × ATR</label><input id="alMove" type="number" value="4" step="1" min="0"></div>
     </div>
+    <div class="row" style="grid-template-columns:1.6fr .9fr 1fr auto;align-items:end">
+      <div><label>Price level — symbol</label><input id="prSym" type="text" placeholder="SPCXUSDT" list="wlOptions"></div>
+      <div><label>Cross</label><select id="prOp"><option value=">=">above</option><option value="<=">below</option></select></div>
+      <div><label>Price</label><input id="prPx" type="number" step="0.01" min="0" placeholder="0.00"></div>
+      <div><button id="prAdd" class="btn">+ add</button></div>
+    </div>
+    <div id="prList"></div>
     <div id="alertLog" style="max-height:190px;overflow:auto;margin-top:9px"></div>
-    <div class="note">Evaluated on every poll against your watchlist and current size. Each rule has a
-      15-minute cooldown per symbol so a persistent condition doesn't spam you. Browser notifications
-      need permission and only fire while the tab is open — this is a monitor, not a pager.</div>
+    <div class="note">Evaluated on every poll against your watchlist and current size. Threshold rules have a
+      15-minute cooldown per symbol so a persistent condition doesn't spam you; price levels fire once on the
+      cross, then sit disarmed until you re-arm them. Voice speaks the symbol and signal — a glance-free
+      channel while you watch another window. The log survives a refresh. Alerts only fire while the tab is
+      open — this is a monitor, not a pager.</div>
   </div>
 
   <!-- ============ CATALYST RADAR ============ -->
@@ -345,6 +360,9 @@ canvas{display:block;width:100%;height:44px}
 
 const API = "https://fapi.binance.com";
 const LS  = "usperp.cfg.v3";   // bumped: v2 saved lev:20 as the default
+// The alert log lives under its own key: it is written on every fire, and
+// keeping it out of the main cfg blob means threshold edits don't rewrite it.
+const LS_LOG = "usperp.alertlog.v1";
 
 // mmr 0.78 is not a guess: it was back-solved from a live isolated SPCXUSDT
 // position and reproduces Binance's own reported liquidation price to within
@@ -373,7 +391,10 @@ const state = {
   earnings:{},          // symbol -> next earnings row (via worker)
   workerUrl:DEFAULT_WORKER,   // overridable per browser via the News panel
   alertFired:{},        // rule+symbol -> last fire time (cooldown)
-  alertLog:[],          // most recent alerts, newest first
+  alertLog:[],          // most recent alerts, newest first (persisted)
+  priceRules:[],        // [{sym, op, px, armed, prev}] user price levels (persisted)
+  priceHist:{},         // symbol -> [{t,p}] rolling ~6 min of marks, for the 5m-move rule
+  voice:false,          // speech alerts opted in (persisted)
   gapStats:{},          // symbol -> overnight gap distribution
   chart:null, chartRO:null,
   notify:false,         // browser notifications opted in
@@ -510,14 +531,18 @@ function loadCfg(){
     if(c.mode) state.mode = c.mode;
     if(c.watch) state.watch = c.watch;
     if(c.workerUrl) state.workerUrl = c.workerUrl;
+    if(Array.isArray(c.priceRules)) state.priceRules = c.priceRules;
+    state.voice = !!c.voice;
   }catch(e){}
+  try{ state.alertLog = JSON.parse(localStorage.getItem(LS_LOG)||"[]"); }catch(e){}
   $("iAcct").value=state.cfg.acct; $("iMargin").value=state.cfg.margin;
   $("iLev").value=state.cfg.lev;   $("iMmr").value=state.cfg.mmr; $("iMax").value=state.cfg.max;
   setSeg();
 }
 function saveCfg(){
   localStorage.setItem(LS, JSON.stringify({cfg:state.cfg, sel:state.sel,
-    side:state.side, mode:state.mode, watch:state.watch, workerUrl:state.workerUrl}));
+    side:state.side, mode:state.mode, watch:state.watch, workerUrl:state.workerUrl,
+    priceRules:state.priceRules, voice:state.voice}));
 }
 function readInputs(){
   state.cfg.acct   = +$("iAcct").value   || 0;
@@ -892,16 +917,30 @@ function beep(){
   }catch(e){}
 }
 
-function fire(key, title, body, severity){
+// Tickers are spelled out letter by letter — "T S L A", not a guessed word.
+const spell = tk => tk.split("").join(" ");
+
+function speak(text){
+  if(!state.voice || !("speechSynthesis" in window)) return;
+  try{
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "en-US"; u.rate = 1.05;
+    speechSynthesis.speak(u);
+  }catch(e){}
+}
+
+function fire(key, title, body, severity, voice){
   const now = Date.now();
   if(state.alertFired[key] && now - state.alertFired[key] < COOLDOWN) return;
   state.alertFired[key] = now;
   state.alertLog.unshift({t:now, title, body, severity});
   state.alertLog = state.alertLog.slice(0,40);
+  try{ localStorage.setItem(LS_LOG, JSON.stringify(state.alertLog)); }catch(e){}
   if(state.notify && "Notification" in window && Notification.permission==="granted"){
     try{ new Notification(title, {body, tag:key}); }catch(e){}
   }
   beep();
+  speak(voice || title);
   renderAlerts();
 }
 
@@ -911,6 +950,7 @@ function evaluateAlerts(){
   const catHrs  = +$("alCat").value  || 0;
   const fundLim = +$("alFund").value || 99;
   const depthLim= +$("alDepth").value|| 999;
+  const moveLim = +$("alMove").value || 0;
   const notional = c.margin * c.lev;
 
   for(const s of state.watch){
@@ -925,7 +965,8 @@ function evaluateAlerts(){
       const z = (basis - hb.mean)/hb.sd;
       if(Math.abs(z) >= zLim)
         fire(`z:${s}`, `${tk} basis ${z>0?"premium":"discount"} ${z.toFixed(1)}σ`,
-          `${(basis*100).toFixed(3)}% vs index${sessionState().live?"":" (index frozen)"}`, "warn");
+          `${(basis*100).toFixed(3)}% vs index${sessionState().live?"":" (index frozen)"}`, "warn",
+          `${spell(tk)} basis ${z>0?"premium":"discount"} ${Math.abs(z).toFixed(1)} sigma`);
     }
 
     // 2. funding cost as a share of your margin
@@ -933,7 +974,8 @@ function evaluateAlerts(){
       const costPct = Math.abs(p.funding * notional / c.margin * 100);
       if(costPct >= fundLim)
         fire(`f:${s}`, `${tk} funding ${pct(p.funding*100,4)}`,
-          `${costPct.toFixed(1)}% of your margin per 8h settlement`, "warn");
+          `${costPct.toFixed(1)}% of your margin per 8h settlement`, "warn",
+          `${spell(tk)} funding cost ${costPct.toFixed(1)} percent of margin`);
     }
 
     // 3. liquidity class degraded at your size
@@ -941,19 +983,38 @@ function evaluateAlerts(){
       const mult = t.vol/notional;
       if(mult < 20)
         fire(`l:${s}`, `${tk} liquidity below your size`,
-          `24h volume is only ${mult.toFixed(0)}× a ${usd(notional)} position`, "bad");
+          `24h volume is only ${mult.toFixed(0)}× a ${usd(notional)} position`, "bad",
+          `${spell(tk)} liquidity below your size`);
+    }
+
+    // 4. abnormal move — 5-minute change against the symbol's own 5m ATR.
+    // The ATR normalisation matters: 1% in 5 minutes is noise on SPCX and an
+    // event on SPY. History comes from the poll loop, so this needs no extra
+    // API call and starts working ~5 minutes after page load.
+    const a = state.atr[s], hist = state.priceHist[s];
+    if(moveLim>0 && a && a.atr5mPct && hist && hist.length){
+      const ref = hist.find(x => Date.now() - x.t >= 4.5*60*1000);
+      if(ref && ref.p){
+        const mv = (p.mark - ref.p)/ref.p*100;
+        if(Math.abs(mv) >= moveLim * a.atr5mPct)
+          fire(`m:${s}`, `${tk} ${mv>0?"spike":"drop"} ${pct(mv)} in 5m`,
+            `${Math.abs(mv/a.atr5mPct).toFixed(1)}× its 5m ATR of ${a.atr5mPct.toFixed(3)}%`, "bad",
+            `${spell(tk)} ${mv>0?"spiking up":"dropping"} ${Math.abs(mv).toFixed(1)} percent in five minutes`);
+      }
     }
   }
 
-  // 4. catalysts entering the window
+  // 5. catalysts entering the window
   for(const e of catalystList()){
     const hrs = (e.when - Date.now())/3600e3;
     if(hrs > 0 && hrs <= catHrs && (e.impact==="high" || e.kind==="earnings"))
       fire(`c:${e.name}:${Math.floor(e.when/1e3)}`, `${e.name} in ${relTime(e.when-Date.now()).replace("in ","")}`,
-        (e.amc ? "After the close — index frozen, perp keeps trading. " : "") + (e.detail||""), "bad");
+        (e.amc ? "After the close — index frozen, perp keeps trading. " : "") + (e.detail||""), "bad",
+        `${e.name} in ${hrs<1 ? Math.round(hrs*60)+" minutes" : hrs.toFixed(1)+" hours"}`
+          + (e.amc ? ", after the close" : ""));
   }
 
-  // 5. exit-side depth against your notional
+  // 6. exit-side depth against your notional
   const d = state.depth;
   if(d && d.bids && d.bids.length){
     const side = state.side==="LONG" ? d.bids : d.asks;
@@ -961,13 +1022,77 @@ function evaluateAlerts(){
     const consumed = notional/depth10*100;
     if(consumed >= depthLim)
       fire(`d:${state.sel}`, `${tickerOf(state.sel)} exit depth thin`,
-        `Your ${usd(notional)} is ${consumed.toFixed(0)}% of 10-level ${state.side==="LONG"?"bid":"ask"} depth`, "bad");
+        `Your ${usd(notional)} is ${consumed.toFixed(0)}% of 10-level ${state.side==="LONG"?"bid":"ask"} depth`, "bad",
+        `${spell(tickerOf(state.sel))} exit depth thin`);
   }
+
+  // 7. user price levels — fire on the cross (a level that is already true
+  // when armed waits for price to leave and come back), then disarm so one
+  // level speaks once, not every poll.
+  let rulesDirty = false;
+  for(const rule of state.priceRules){
+    const rp = state.premium[rule.sym];
+    if(!rp || !rule.armed) continue;
+    const hit = rule.op===">=" ? rp.mark >= rule.px : rp.mark <= rule.px;
+    if(hit && rule.prev===false){
+      rule.armed = false; rulesDirty = true;
+      const tk = tickerOf(rule.sym);
+      fire(`p:${rule.sym}:${rule.op}${rule.px}:${Date.now()}`,
+        `${tk} ${rule.op===">="?"above":"below"} ${fmt(rule.px, rule.px>100?2:3)}`,
+        `mark ${fmt(rp.mark, rp.mark>100?2:3)} crossed your level`, "bad",
+        `${spell(tk)} ${rule.op===">="?"above":"below"} ${rule.px}`);
+    }
+    rule.prev = hit;
+  }
+  if(rulesDirty){ saveCfg(); renderPriceRules(); }
+}
+
+function renderPriceRules(){
+  const box = $("prList");
+  if(!box) return;
+  if(!state.priceRules.length){ box.innerHTML=""; return; }
+  box.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:6px">` +
+    state.priceRules.map((r,i)=>{
+      return `<span class="tag ${r.armed?"t-cau":"t-avoid"}" style="padding:3px 8px;font-size:10px">
+        ${tickerOf(r.sym)} ${r.op===">="?"≥":"≤"} ${r.px}${r.armed?"":
+          ` · fired <a href="#" class="prRearm" data-i="${i}" style="color:inherit">re-arm</a>`}
+        <a href="#" class="prDel" data-i="${i}" style="text-decoration:none;color:inherit;margin-left:4px">×</a></span>`;
+    }).join("") + `</div>`;
+  box.querySelectorAll(".prDel").forEach(el=>el.onclick=e=>{
+    e.preventDefault(); state.priceRules.splice(+el.dataset.i,1);
+    saveCfg(); renderPriceRules(); });
+  box.querySelectorAll(".prRearm").forEach(el=>el.onclick=e=>{
+    e.preventDefault();
+    const r = state.priceRules[+el.dataset.i];
+    const p = state.premium[r.sym];
+    r.armed = true;
+    r.prev  = p ? (r.op===">=" ? p.mark>=r.px : p.mark<=r.px) : false;
+    saveCfg(); renderPriceRules(); });
+}
+
+function addPriceRule(){
+  let sym = ($("prSym").value||"").trim().toUpperCase();
+  const px = +$("prPx").value;
+  if(!sym || !(px>0)) return;
+  if(!state.uniMap[sym]){
+    const guess = Object.keys(state.uniMap).find(k=>k.startsWith(sym));
+    if(!guess){ alert(sym+" is not a listed equity perp."); return; }
+    sym = guess;
+  }
+  const op = $("prOp").value;
+  const p  = state.premium[sym];
+  state.priceRules.push({sym, op, px, armed:true,
+    prev: p ? (op===">=" ? p.mark>=px : p.mark<=px) : false});
+  $("prSym").value=""; $("prPx").value="";
+  saveCfg(); renderPriceRules();
 }
 
 function renderAlerts(){
   const on = state.notify && "Notification" in window && Notification.permission==="granted";
-  $("alertState").textContent = on ? "notifications on" : "in-page only";
+  const chans = [];
+  if(state.voice) chans.push("voice");
+  if(on) chans.push("notifications");
+  $("alertState").textContent = chans.length ? chans.join(" + ")+" on" : "in-page only";
   const log = state.alertLog;
   $("alertLog").innerHTML = log.length ? log.map(a=>{
     const kl = a.severity==="bad" ? "t-avoid" : "t-cau";
@@ -1512,6 +1637,14 @@ async function pollMarket(){
     if(!state.uniMap[b.symbol]) continue;
     state.book[b.symbol] = {bid:+b.bidPrice, ask:+b.askPrice};
   }
+  // rolling mark history per watched symbol — feeds the 5m-move alert
+  const now = Date.now();
+  for(const s of state.watch){
+    const p = state.premium[s]; if(!p || !isFinite(p.mark)) continue;
+    const h = state.priceHist[s] || (state.priceHist[s] = []);
+    h.push({t:now, p:p.mark});
+    while(h.length && now - h[0].t > 6*60*1000) h.shift();
+  }
   renderBasis(); renderGap(); renderFunding(); renderGate(); renderCalc(); renderChecklist();
   renderSizing(); renderRS(); evaluateAlerts();
   $("lastTick").textContent = " · updated " + new Date().toLocaleTimeString("en-GB",{hour12:false});
@@ -1590,7 +1723,21 @@ async function boot(){
   });
   ["szAtr","szRisk","szStop"].forEach(id=>$(id).addEventListener("input", renderSizing));
   $("chartItv").addEventListener("change", renderChart);
-  ["alZ","alCat","alFund","alDepth"].forEach(id=>$(id).addEventListener("input", evaluateAlerts));
+  ["alZ","alCat","alFund","alDepth","alMove"].forEach(id=>$(id).addEventListener("input", evaluateAlerts));
+  $("prAdd").onclick = e => { e.preventDefault(); addPriceRule(); };
+  $("prPx").addEventListener("keydown", e => { if(e.key==="Enter") addPriceRule(); });
+  $("btnVoice").textContent = state.voice ? "voice on" : "voice off";
+  $("btnVoice").onclick = e => {
+    e.preventDefault();
+    if(!("speechSynthesis" in window)){ alert("This browser has no speech synthesis."); return; }
+    state.voice = !state.voice;
+    $("btnVoice").textContent = state.voice ? "voice on" : "voice off";
+    saveCfg(); renderAlerts();
+    // The toggle click is the user gesture that unlocks audio — confirm out
+    // loud so a silent failure is obvious right now, not during a trade.
+    if(state.voice) speak("Voice alerts on");
+    else try{ speechSynthesis.cancel(); }catch(e2){}
+  };
   $("btnNotify").onclick = async e => {
     e.preventDefault();
     if(!("Notification" in window)){ alert("This browser has no Notification API."); return; }
@@ -1632,7 +1779,7 @@ async function boot(){
   await pollMarket();
   // stats for the watchlist, staggered so we stay well inside rate limits
   for(const s of state.watch){ await loadSymbolStats(s); }
-  renderVol(); renderFunding(); renderCalc(); renderSizing(); renderRS(); renderAlerts();
+  renderVol(); renderFunding(); renderCalc(); renderSizing(); renderRS(); renderAlerts(); renderPriceRules();
   await loadDepth();
   await loadGapStats(state.sel);
   renderGapStats();
